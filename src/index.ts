@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-import { $ } from "bun";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -14,6 +13,7 @@ import {
   type NotebookResult,
   type TagResult,
 } from "./upnote";
+import { openUpNoteUrl } from "./url";
 
 const repository = new UpNoteRepository();
 
@@ -76,10 +76,6 @@ function formatNoteDetail(note: ReturnType<UpNoteRepository["getNote"]>): string
     "",
     note.content || "(no content)",
   ].join("\n");
-}
-
-async function openUpNoteUrl(url: string): Promise<void> {
-  await $`open ${url}`.quiet();
 }
 
 function formatOpenResult(label: string, url: string): string {

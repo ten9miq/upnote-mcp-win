@@ -1,8 +1,13 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { Database } from "bun:sqlite";
 
-const DEFAULT_UPNOTE_DB = `${homedir()}/Library/Containers/com.getupnote.desktop/Data/Library/Application Support/UpNote/upnote.sqlite3`;
+export type DbPathResolutionOptions = {
+  env?: Record<string, string | undefined>;
+  platform?: NodeJS.Platform;
+  homeDir?: string;
+};
 
 export type SearchNotesParams = {
   query: string;
@@ -92,18 +97,45 @@ type NoteDetailRow = {
   createdAt: number | null;
 };
 
-function resolveUpnoteDbPath(): string {
-  const configured = process.env.UPNOTE_DB?.trim();
-  const raw = configured || DEFAULT_UPNOTE_DB;
-  return raw.replaceAll("${HOME}", homedir());
+export function resolveUpnoteDbPath(options: DbPathResolutionOptions = {}): string {
+  const env = options.env ?? process.env;
+  const platform = options.platform ?? process.platform;
+  const homeDir = options.homeDir ?? homedir();
+  const configured = env.UPNOTE_DB?.trim();
+
+  if (configured) {
+    return configured.replaceAll("${HOME}", homeDir);
+  }
+
+  if (platform === "win32") {
+    const appData = env.APPDATA?.trim();
+    if (!appData) {
+      throw new Error("APPDATA is not set, so the default Windows UpNote database path cannot be resolved. Set UPNOTE_DB explicitly.");
+    }
+    return join(appData, "UpNote", "upnote.sqlite3");
+  }
+
+  // Keep the existing default for macOS and Linux-compatible environments.
+  return join(
+    homeDir,
+    "Library",
+    "Containers",
+    "com.getupnote.desktop",
+    "Data",
+    "Library",
+    "Application Support",
+    "UpNote",
+    "upnote.sqlite3",
+  );
 }
 
 function createOpenDbMessage(dbPath: string, error: unknown): string {
   return [
     "Failed to open the UpNote database.",
     `Checked path: ${dbPath}`,
-    "If you installed via Claude Desktop, open UpNote MCP settings and choose upnote.sqlite3 with the file picker.",
+    "Confirm that UpNote Desktop has initialized the database, then set UPNOTE_DB if the database is stored elsewhere.",
     "On macOS, Claude Desktop may also need Full Disk Access in System Settings > Privacy & Security.",
+    "On Windows, the standard path is %APPDATA%\\UpNote\\upnote.sqlite3.",
     `Details: ${String(error)}`,
   ].join("\n");
 }

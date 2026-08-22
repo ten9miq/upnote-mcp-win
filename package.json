@@ -33,7 +33,9 @@
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
     "check": "tsc --noEmit",
+    "test": "bun test",
     "smoke": "bun run scripts/smoke.ts",
+    "smoke:mcp": "bun run scripts/mcp-smoke.ts",
     "build:mcpb": "bun build --compile src/index.ts --outfile dist/upnote-mcp && mkdir -p mcpb-bundle/server && cp dist/upnote-mcp mcpb-bundle/server/upnote-mcp && bunx @anthropic-ai/mcpb pack mcpb-bundle dist/upnote-mcp.mcpb",
     "prepublishOnly": "bun run check"
   },
