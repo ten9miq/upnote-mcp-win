@@ -239,6 +239,10 @@ export class UpNoteRepository {
     return this.dbPath;
   }
 
+  close(): void {
+    this.db.close();
+  }
+
   listNotebooks(): NotebookResult[] {
     try {
       const rows = this.db
@@ -249,11 +253,30 @@ export class UpNoteRepository {
               nb.title,
               nb.parent,
               nb.updatedAt,
-              COUNT(o.noteId) AS noteCount
+              CASE
+                WHEN EXISTS (
+                  SELECT 1
+                  FROM lists l
+                  WHERE l.id = 'notebooks_' || nb.id AND l.deleted = 0
+                ) THEN (
+                  SELECT COUNT(*)
+                  FROM lists l,
+                    json_each(
+                      CASE
+                        WHEN json_valid(l.content) THEN l.content
+                        ELSE '[]'
+                      END
+                    ) noteIds
+                  WHERE l.id = 'notebooks_' || nb.id AND l.deleted = 0
+                )
+                ELSE (
+                  SELECT COUNT(*)
+                  FROM organizers o
+                  WHERE o.notebookId = nb.id AND o.deleted = 0
+                )
+              END AS noteCount
             FROM notebooks nb
-            LEFT JOIN organizers o ON o.notebookId = nb.id AND o.deleted = 0
             WHERE nb.deleted = 0 AND nb.inactive = 0
-            GROUP BY nb.id
             ORDER BY nb.title ASC
           `,
         )
