@@ -29,13 +29,17 @@ This package is prepared to be published as `@bellx2/upnote-mcp`.
 
 ## Requirements
 
-- `macOS`
-- `bun` installed on the machine that runs the server
+- `macOS` or `Windows 10/11`
+- `bun >= 1.3.0` installed on the machine that runs the server
 - UpNote desktop app installed
-- Default UpNote database path:
+- Default UpNote database paths:
 
 ```text
+# macOS
 ~/Library/Containers/com.getupnote.desktop/Data/Library/Application Support/UpNote/upnote.sqlite3
+
+# Windows
+%APPDATA%\UpNote\upnote.sqlite3
 ```
 
 If your database lives somewhere else, set `UPNOTE_DB`.
@@ -119,6 +123,12 @@ Example:
 export UPNOTE_DB="$HOME/Library/Containers/com.getupnote.desktop/Data/Library/Application Support/UpNote/upnote.sqlite3"
 ```
 
+Windows PowerShell:
+
+```powershell
+$env:UPNOTE_DB = "$env:APPDATA\UpNote\upnote.sqlite3"
+```
+
 ## Permissions
 
 On first run, your MCP client may show permission prompts for command execution and local file access.
@@ -194,6 +204,23 @@ Download and install the `.mcpb` file from [GitHub Releases](https://github.com/
   }
 }
 ```
+
+#### Codex on Windows
+
+Register the local checkout after running `bun install`. Use the absolute path to the installed Bun executable when Codex does not inherit the interactive shell `PATH`.
+
+```powershell
+codex mcp add upnote-local --env "UPNOTE_DB=$env:APPDATA\UpNote\upnote.sqlite3" -- "C:\Users\you\.bun\bin\bun.exe" run "C:\absolute\path\to\upnote-mcp\src\index.ts"
+```
+
+Verify the registration:
+
+```powershell
+codex mcp list
+codex mcp get upnote-local
+```
+
+This starts the local source checkout; it does not use `bunx @bellx2/upnote-mcp`. Database reads remain read-only. `open_note`, `open_notebook`, and `create_note` use the registered `upnote://` URL scheme handler rather than writing SQLite directly.
 
 ## Example Workflows
 

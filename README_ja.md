@@ -13,12 +13,17 @@
 
 ## 前提
 
-- `macOS`
+- `macOS` または `Windows 10/11`
+- `bun >= 1.3.0`（`package.json` の要件）
 - `UpNote` デスクトップアプリがインストール済み
 - 既定のDBパス:
 
 ```text
+# macOS
 ~/Library/Containers/com.getupnote.desktop/Data/Library/Application Support/UpNote/upnote.sqlite3
+
+# Windows
+%APPDATA%\UpNote\upnote.sqlite3
 ```
 
 DBパスが異なる場合は `UPNOTE_DB` で上書きできます。
@@ -94,6 +99,12 @@ bun run build:mcpb
 export UPNOTE_DB="$HOME/Library/Containers/com.getupnote.desktop/Data/Library/Application Support/UpNote/upnote.sqlite3"
 ```
 
+Windows PowerShell の例:
+
+```powershell
+$env:UPNOTE_DB = "$env:APPDATA\UpNote\upnote.sqlite3"
+```
+
 ## 権限
 
 初回起動時に、MCP クライアント側でコマンド実行やローカルファイルアクセスの権限ダイアログが表示されることがあります。
@@ -156,6 +167,23 @@ export UPNOTE_DB="$HOME/Library/Containers/com.getupnote.desktop/Data/Library/Ap
   }
 }
 ```
+
+### WindowsのCodexへローカルforkを登録
+
+`bun install` 後、公開npmパッケージではなく、このローカルcheckoutを登録します。Codexが対話シェルの`PATH`を継承しない場合は、Bunの絶対パスを指定します。
+
+```powershell
+codex mcp add upnote-local --env "UPNOTE_DB=$env:APPDATA\UpNote\upnote.sqlite3" -- "C:\Users\you\.bun\bin\bun.exe" run "C:\absolute\path\to\upnote-mcp\src\index.ts"
+```
+
+確認:
+
+```powershell
+codex mcp list
+codex mcp get upnote-local
+```
+
+この設定はローカルソースを`bun run`で起動し、`bunx @bellx2/upnote-mcp`は使用しません。SQLite DBは常にread-onlyで開き、`open_note`・`open_notebook`・`create_note`はSQLiteへ直接書き込まず、登録済みの`upnote://` URL Scheme Handlerを使います。
 
 ## ツール仕様
 
