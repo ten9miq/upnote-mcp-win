@@ -11,6 +11,7 @@ This fork starts an independent version line at **0.1.0** as `@ten9miq/upnote-mc
 
 ### Added
 
+- Real Windows retention verification through the reconnected chat MCP: 12 edits of one dedicated note, ten archives retained, two oldest files automatically removed, exact pre-edit row/integrity checks and fresh editor/sync acknowledgements; record the untested byte-ceiling/other-device scope
 - Configurable per-note generation and managed-byte backup retention (defaults: 10 / 512 MiB), latest/archive preparation protection, cross-process locking, safe automatic pruning and `backupRetention` reports
 - `get_note_edit_context` and `patch_note_in_app`: compact reads plus literal text replacement, section replacement/append and heading rename, preserving untouched HTML source
 - Same-snapshot batch planning, overlap/ambiguity/protected-object guards and exact saved-HTML verification using the existing backup/conflict/native sync path

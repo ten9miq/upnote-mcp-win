@@ -20,9 +20,19 @@ Environment: UpNote 9.22.9, Windows Store installation, Bun 1.4.0, signed-in pro
 
 An unsigned-in disposable-profile native test verified local save/DOM/backup and correctly reported sync as unverified. It is not evidence of authenticated cloud sync.
 
+## Live backup retention check (2026-11-15 JST)
+
+A dedicated note in the signed-in Windows app was created through the reconnected chat's `create_note` tool, then edited sequentially 12 times with that chat's `patch_note_in_app`. No separate MCP test client performed these mutations. The effective limits were 10 generations per note/profile and 512 MiB total managed bytes; there were no managed archives before this check.
+
+The count grew to ten at edit 10 and stayed at ten for edits 11 and 12. The oldest archive was physically absent after edit 11, and the next-oldest was absent after edit 12. Final retained pre-edit revisions were 02–11, totaling **122880 bytes (120 KiB)**. The latest archive matched the entire row before edit 12, while the live note had revision 12. Every retained archive passed SQLite integrity checks.
+
+All 12 edits preserved the note ID/creation time and returned verified editor reflection, exact planned HTML and fresh app sync acknowledgement (`state: synced`, `htmlPreserved: true`). The test note and ten archives remain available locally; ordinary notes were not edited. The full audit and identifiers/local paths are not published. See [the retention check](note-backups.md#live-retention-check-2026-11-15-jst) for the procedure, per-step results and limits of the evidence.
+
+This small-note check did not exercise the 512 MiB capacity ceiling or independently confirm another device's receipt. Byte-limit pruning, protected-only overage, file-deletion failures and concurrent creation/pruning remain temporary-data test coverage.
+
 ## Automated tests
 
-The current suite passes all 87 tests in eleven files and TypeScript checks, including per-note archives. The suite covers direct/native editing, archive integrity/exact row equality/rollback, exclusion of unrelated notes/tables, stale versions, metadata races, runtime/schema/value compatibility, async app actions, startup recovery, CF_HTML byte offsets, partial-operation ambiguity/overlap/protected objects and exact saved HTML. See [per-note backup verification](note-backups.md#verification) for the measured size reduction.
+The current suite passes all **102 tests in twelve files** and TypeScript checks, including per-note archives and retention. The suite covers direct/native editing, archive integrity/exact row equality/rollback, exclusion of unrelated notes/tables, generation/byte pruning, latest/preparation protection, deletion failures and cross-process locks, stale versions, metadata races, runtime/schema/value compatibility, async app actions, startup recovery, CF_HTML byte offsets, partial-operation ambiguity/overlap/protected objects and exact saved HTML. See [per-note backup verification](note-backups.md#verification) for measured archive sizes and the live retention check.
 
 Long-note tests include multi-megabyte HTML and 8000 replacements. An isolated stdio MCP test reads a 6 MiB synthetic note compactly, rejects its oversized save, and checks a compact preview of an approximately 800 kB note against a fake app endpoint. This does not demonstrate real cloud syncing above UpNote's size limit.
 

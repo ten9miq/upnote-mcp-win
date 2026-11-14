@@ -187,6 +187,8 @@ bun run build:mcpb
 
 パッケージ内容・手動公開は[公開手順](docs/releasing.md)を参照してください。MCPBのローカルビルドと、Claude Desktopへ実際に導入できることは別の確認項目です。
 
+2026年11月15日（JST）、再接続したチャットのMCPで専用ノートを12回編集して実機確認しました。10回目で10世代になり、11・12回目は最古のファイルが1件ずつ自動削除され、最新の編集前バックアップを含む10件（計120KiB）が残りました。残存ファイルの整合性と、全回の画面反映・アプリ同期応答も確認済みです。この小容量の試験では512MiB上限への到達や別端末受信は確認していません。[実機検証の詳細](docs/note-backups.md#live-retention-check-2026-11-15-jst)を参照してください。
+
 ## ライセンス・帰属
 
 MIT。[LICENSE](LICENSE)に元のbellx2の著作権表示を保持しています。基盤はbellx2/upnote-mcp、DB直接編集の設計ではbug-breeder/upnote-mcpを参考にしました。このforkの問い合わせは[こちらのIssues](https://github.com/ten9miq/upnote-mcp-win/issues)へお願いします。元プロジェクトの作者がこのforkを保守するものではありません。
