@@ -33,7 +33,7 @@
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
     "check": "tsc --noEmit",
-    "test": "bun test",
+    "test": "bun run scripts/run-tests.ts",
     "smoke": "bun run scripts/smoke.ts",
     "smoke:mcp": "bun run scripts/mcp-smoke.ts",
     "build:mcpb": "bun build --compile src/index.ts --outfile dist/upnote-mcp && mkdir -p mcpb-bundle/server && cp dist/upnote-mcp mcpb-bundle/server/upnote-mcp && bunx @anthropic-ai/mcpb pack mcpb-bundle dist/upnote-mcp.mcpb",
@@ -48,6 +48,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "entities": "^9.0.0",
+    "htmlparser2": "^12.0.0",
     "zod": "^4.4.3"
   }
 }

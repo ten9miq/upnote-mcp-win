@@ -47,7 +47,9 @@
     { "name": "complete_app_note_edit", "description": "Verify an app-editor edit and fresh app sync acknowledgement" },
     { "name": "update_note_in_app", "description": "Windows only: edit through opt-in local CDP and UpNote's internal save action, without Computer Use" },
     { "name": "get_upnote_bridge_status", "description": "Prepare/check native bridge, editor reflection and app sync metadata" },
-    { "name": "ensure_upnote_connection", "description": "Prepare an available UpNote connection, with opt-in background startup" }
+    { "name": "ensure_upnote_connection", "description": "Prepare an available UpNote connection, with opt-in background startup" },
+    { "name": "get_note_edit_context", "description": "Read compact version/size, headings and targeted text or section context" },
+    { "name": "patch_note_in_app", "description": "Apply source-preserving text and heading-section edits with backup, conflict and sync verification" }
   ],
   "keywords": ["upnote", "notes", "mcp", "productivity"],
   "license": "MIT",

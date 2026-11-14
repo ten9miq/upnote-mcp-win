@@ -438,3 +438,60 @@ test("automatic connection recovery never retries a mutation whose response was 
   expect(result.applied).toBeNull(); expect(result.state).toBe("unavailable");
   expect(mutations).toBe(1); expect(launches).toBe(0);
 });
+
+test("partial native batches preserve rich HTML/attachment references, use one backup and return compact results", async () => {
+  let calls = 0;
+  const html = '<h2>Old title</h2><h2>A</h2><p><b>old</b> text</p><h2>B</h2><p>section</p><h2>C</h2><div style="color:red"><img src="keep">UNCHANGED-SENTINEL</div>';
+  const expected = html.replace("<b>old</b>", "<b>new</b>").replace("<p>section</p>", "\n<p>new section</p>");
+  const f = fixture({ connectNative: async () => nativeChannel(() => {
+    calls++; const now = Date.now();
+    f.db.query("UPDATE notes SET html=?,text=?,synced=1,syncedAt=?,updatedAt=?,revision=revision+1 WHERE id='note-a'").run(expected, htmlToPlainText(expected), now, now);
+  }) });
+  f.db.query("UPDATE notes SET html=?,text=?,filesCount=1,fileIds='[\"image-a\"]',firstImage='image-a' WHERE id='note-a'").run(html, htmlToPlainText(html));
+  const before = f.row();
+  const result = await f.repository.patchNoteInApp({ ...f.params(), operations: [
+    { type: "replace_text", find: "old", replacement: "new" },
+    { type: "replace_section", section: { heading: "B" }, content: "new section", contentFormat: "text" },
+  ], waitMs: 0 });
+  expect(result.state).toBe("synced"); expect(result.htmlPreserved).toBe(true); expect(result.changes).toHaveLength(2);
+  expect(calls).toBe(1); expect(readdirSync(f.backupsDir)).toHaveLength(1);
+  expect(f.row().html).toBe(expected); expect(f.row().fileIds).toBe(before.fileIds); expect(f.row().firstImage).toBe(before.firstImage);
+  expect("note" in result).toBe(false); expect("preview" in result).toBe(false);
+  expect(JSON.stringify(result)).not.toContain("UNCHANGED-SENTINEL");
+  const backup = new Database(result.backupPath!, { readonly: true, create: false });
+  try { expect(backup.query("SELECT * FROM notes WHERE id='note-a'").get()).toEqual(before); } finally { backup.close(); }
+});
+
+test("invalid batches, stale versions and partial dry runs cannot mutate or create backups", async () => {
+  let calls = 0;
+  const f = fixture({ connectNative: async () => nativeChannel(() => { calls++; }) });
+  const before = f.row();
+  await expect(f.repository.patchNoteInApp({ ...f.params(), operations: [
+    { type: "replace_text", find: "Old body", replacement: "new" }, { type: "replace_text", find: "missing", replacement: "bad" },
+  ] })).rejects.toThrow("count differs");
+  const preview = await f.repository.patchNoteInApp({ ...f.params(), dryRun: true, operations: [{ type: "replace_text", find: "Old body", replacement: "preview" }] });
+  expect(preview.applied).toBe(false); expect(preview.htmlPreserved).toBeNull(); expect(preview.changes).toHaveLength(1);
+  expect(f.row()).toEqual(before); expect(calls).toBe(0); expect(existsSync(f.backupsDir)).toBe(false);
+  const stale = f.params(); f.db.exec("UPDATE notes SET pinned=0 WHERE id='note-a'");
+  await expect(f.repository.patchNoteInApp({ ...stale, operations: [{ type: "replace_text", find: "Old body", replacement: "no" }] })).rejects.toThrow("changed");
+  expect(calls).toBe(0); expect(existsSync(f.backupsDir)).toBe(false);
+});
+
+test("partial editing reports a conflict if the app rewrites planned HTML despite matching text", async () => {
+  const f = fixture({ connectNative: async () => nativeChannel(() => {
+    const now = Date.now(); f.db.query("UPDATE notes SET html=?,text=?,synced=1,syncedAt=?,updatedAt=? WHERE id='note-a'").run('<h2>Old title</h2><div>new</div>', 'Old title\nnew', now, now);
+  }) });
+  const result = await f.repository.patchNoteInApp({ ...f.params(), waitMs: 0, operations: [{ type: "replace_text", find: "Old body", replacement: "new" }] });
+  expect(result.applied).toBe(true); expect(result.htmlPreserved).toBe(false); expect(result.state).toBe("conflict"); expect(result.backupPath).not.toBeNull();
+});
+
+test("partial backup failure and lost native responses never cause mutation retries", async () => {
+  let calls = 0;
+  const f = fixture({ connectNative: async () => nativeChannel(() => { calls++; throw new NativeConnectionUnavailable("lost"); }) });
+  const result = await f.repository.patchNoteInApp({ ...f.params(), operations: [{ type: "replace_text", find: "Old body", replacement: "new" }] });
+  expect(calls).toBe(1); expect(result.applied).toBeNull(); expect(result.version).toBeNull(); expect(result.htmlPreserved).toBeNull();
+  const blocked = fixture({ connectNative: async () => nativeChannel(() => { calls++; }) });
+  writeFileSync(blocked.backupsDir, "blocked");
+  await expect(blocked.repository.patchNoteInApp({ ...blocked.params(), operations: [{ type: "replace_text", find: "Old body", replacement: "new" }] })).rejects.toThrow();
+  expect(calls).toBe(1);
+});

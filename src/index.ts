@@ -17,6 +17,18 @@ import { openUpNoteUrl } from "./url";
 
 // Advertise MCP tools even if the database is temporarily unavailable at startup.
 const repository = new UpNoteRepository(undefined, { lazyOpen: true });
+const headingSelector = z.object({
+  heading: z.string().min(1).max(64_000).optional(), level: z.number().int().min(1).max(6).optional(),
+  occurrence: z.number().int().min(1).optional(), index: z.number().int().min(1).optional(),
+}).refine(value => value.heading !== undefined || value.index !== undefined, "Provide heading or index");
+const partialOperation = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("replace_text"), find: z.string().min(1).max(64_000), replacement: z.string().max(1_000_000),
+    occurrence: z.number().int().min(1).optional(), all: z.boolean().optional(), expectedMatches: z.number().int().min(1).max(10_000).optional(), section: headingSelector.optional() }),
+  z.object({ type: z.literal("replace_section"), section: headingSelector, content: z.string().max(1_000_000), contentFormat: z.enum(["markdown", "text"]).optional() }),
+  z.object({ type: z.literal("append_section"), section: headingSelector, content: z.string().min(1).max(1_000_000), contentFormat: z.enum(["markdown", "text"]).optional() }),
+  z.object({ type: z.literal("rename_heading"), section: headingSelector, heading: z.string().min(1).max(64_000) }),
+]);
+
 function formatSearchResults(query: string, notes: ReturnType<UpNoteRepository["searchNotes"]>): string {
   if (notes.length === 0) {
     return `No notes matched query="${query}".`;
@@ -476,6 +488,44 @@ async function main(): Promise<void> {
     async ({ id }) => {
       const result = await repository.getNativeBridgeStatus(id);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: { ...result, dbPath: repository.getResolvedDbPath() } };
+    },
+  );
+
+  server.registerTool(
+    "get_note_edit_context",
+    {
+      description: "Read compact note metadata/version, UTF-8 HTML size/sync status and paginated body headings without returning the whole note. Optional find returns literal visible-text matches with short context. Optional section (heading/level/occurrence or outline index) returns only that section, bounded by maxChars (default 8000, maximum 64000). The leading title is protected. Use the returned version for patch_note_in_app; recheck context/sync after incomplete edits instead of fetching the whole body.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: { id: z.string().min(1), find: z.string().min(1).max(64_000).optional(), section: headingSelector.optional(),
+        sectionFormat: z.enum(["html", "text"]).optional(), maxChars: z.number().int().min(1).max(64_000).optional(),
+        offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(100).optional() },
+    },
+    async ({ id, ...options }) => {
+      const result = repository.getNoteEditContext(id, options);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: { ...result, dbPath: repository.getResolvedDbPath() } };
+    },
+  );
+
+  server.registerTool(
+    "patch_note_in_app",
+    {
+      description: [
+        "Apply 1..100 partial operations to the existing HTML server-side, without resending/returning the whole note through MCP.",
+        "Read get_note_edit_context first and pass expectedVersion. All operations target the same original snapshot; overlapping edits are refused. They are saved together with one verified backup and the normal native app conflict/UI/sync checks.",
+        "replace_text matches literal visible text within a block, across inline tags, and escapes the replacement as text; it preserves tags/attributes and inherits the first matched text node's style. Ambiguous matches require occurrence or all plus expectedMatches.",
+        "replace_section changes the body after a heading through the next same/higher-level heading; append_section adds at its end; rename_heading changes its label. Duplicate headings require an explicit level/occurrence or outline index.",
+        "Unchanged HTML is source-spliced rather than serialized. Title, attachment/protected-object content and unsafe section boundaries are refused. Images outside the changed section may remain untouched.",
+        "The final HTML must fit the conservative 1,000,000 UTF-8 byte cloud-sync ceiling. Existing oversized notes can be read and shrunk below it.",
+        "Only state=synced with htmlPreserved=true verifies the expected saved HTML, editor and fresh app sync acknowledgement. dryRun previews only compact change summaries. On unknown/incomplete results inspect context/sync, never repeat a mutation automatically.",
+      ].join(" "),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      inputSchema: { id: z.string().min(1), expectedVersion: z.string().regex(/^[a-f\d]{64}$/), operations: z.array(partialOperation).min(1).max(100),
+        dryRun: z.boolean().optional(), waitMs: z.number().int().min(0).max(30_000).optional() },
+    },
+    async (params) => {
+      const result = await repository.patchNoteInApp(params);
+      return { isError: result.state === "conflict" || result.state === "unavailable",
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: { ...result, dbPath: repository.getResolvedDbPath() } };
     },
   );
 

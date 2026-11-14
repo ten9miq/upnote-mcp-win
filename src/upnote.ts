@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
-import { isUpNoteRunning, noteVersion, prepareNoteUpdate, type UpdateNoteParams } from "./editing";
+import { isUpNoteRunning, noteVersion, prepareNoteUpdate, htmlUpdateFields, assertNoteHtmlSize, MAX_NOTE_HTML_BYTES, type UpdateNoteParams } from "./editing";
+import { noteEditContext, planPartialEdit, type PartialOperation, type ContextOptions } from "./partial-edit";
 import { stageNoteClipboard } from "./clipboard";
 import { NativeConnection, nativeExpression, type NativeChannel } from "./native-bridge";
 import { assertNativeSchema, assertNativeNoteData, type NativeColumn } from "./compatibility";
@@ -408,6 +409,7 @@ export class UpNoteRepository {
   }
 
   private async applyNativeFields(id: string, before: Record<string, unknown>, patch: Record<string, string | number>, database: ReturnType<typeof assertNativeSchema>, dryRun: boolean, waitMs: number): Promise<NativeEditResult> {
+    assertNoteHtmlSize(String(patch.html ?? before.html ?? ""));
     const expectedVersion = noteVersion(before);
     const connection = await this.nativeConnection();
     const result: NativeEditResult = { id, applied: false, state: "unchanged", uiUpdated: false, cloudSync: "unverified", otherDeviceVerified: false, backupPath: null, note: this.getNote(id), message: "Nothing to change.", preview: dryRun ? { title: String(patch.title ?? before.title ?? ""), content: String(patch.text ?? before.text ?? ""), html: String(patch.html ?? before.html ?? "") } : null, compatibility: { database } };
@@ -467,6 +469,39 @@ export class UpNoteRepository {
     } finally { connection.close(); }
   }
 
+  getNoteEditContext(id: string, options: ContextOptions = {}) {
+    const row = this.db.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id=? AND deleted=0 AND trashed=0").get(id.trim());
+    if (!row) throw new Error("Active note not found.");
+    assertNativeNoteData(row, "sqlite");
+    return { id: row.id, title: String(row.title ?? "").slice(0, 1000), titleTruncated: String(row.title ?? "").length > 1000, version: noteVersion(row), htmlChars: String(row.html ?? "").length,
+      htmlBytes: Buffer.byteLength(String(row.html ?? "")), maxHtmlBytes: MAX_NOTE_HTML_BYTES,
+      textChars: String(row.text ?? "").length,
+      sync: { synced: row.synced === 1, syncedAt: Number(row.syncedAt) > 0 ? formatTimestamp(Number(row.syncedAt)) : null, revision: row.revision },
+      ...noteEditContext(String(row.html ?? ""), String(row.title ?? ""), options) };
+  }
+
+  async patchNoteInApp(params: { id: string; expectedVersion: string; operations: PartialOperation[]; dryRun?: boolean; waitMs?: number }) {
+    if (!params.id.trim() || !/^[a-f\d]{64}$/.test(params.expectedVersion)) throw new Error("Provide id and expectedVersion from get_note_edit_context.");
+    const database = this.nativeSchemaCompatibility();
+    const before = this.db.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id=? AND deleted=0 AND trashed=0").get(params.id.trim());
+    if (!before || noteVersion(before) !== params.expectedVersion) throw new Error("The note changed; inspect get_note_edit_context again before patching.");
+    assertNativeNoteData(before, "sqlite");
+    const plan = planPartialEdit(String(before.html ?? ""), String(before.title ?? ""), params.operations);
+    const patch = htmlUpdateFields(before, plan.html);
+    const result = await this.applyNativeFields(params.id.trim(), before, patch, database, !!params.dryRun, params.waitMs ?? 20_000);
+    const htmlPreserved = result.applied && result.note ? result.note.html === plan.html : result.state === "unchanged" && !params.dryRun ? true : null;
+    if (htmlPreserved === false) {
+      result.state = "conflict";
+      result.message = "UpNote saved HTML that differs from the source-preserving patch. Inspect the note and backup; do not retry or restore automatically.";
+    }
+    // Never serialize the entire old/new note or a full HTML preview to MCP.
+    return { id: result.id, applied: result.applied, state: result.state, uiUpdated: result.uiUpdated,
+      cloudSync: result.cloudSync, otherDeviceVerified: false, backupPath: result.backupPath,
+      version: result.note?.version ?? null, sync: result.note?.sync ?? null, dryRun: !!params.dryRun,
+      htmlPreserved, changes: plan.changes, htmlCharsBefore: plan.htmlCharsBefore, htmlCharsAfter: plan.htmlCharsAfter,
+      compatibility: result.compatibility, message: result.message };
+  }
+
   async prepareAppNoteEdit(params: UpdateNoteParams) {
     if (!params.id.trim() || !/^[a-f\d]{64}$/.test(params.expectedVersion)) throw new Error("Provide id and expectedVersion from get_note.");
     if (params.title === undefined && params.content === undefined) throw new Error("Provide title or content.");
@@ -486,6 +521,7 @@ export class UpNoteRepository {
     const desiredTitle = String(patch.title ?? before.title ?? "");
     const desiredText = String(patch.text ?? before.text ?? "");
     const html = String(patch.html ?? before.html ?? "");
+    assertNoteHtmlSize(html);
     // Snapshot under a writer reservation, but do not update any UpNote rows.
     const writer = new Database(this.dbPath, { readwrite: true, create: false, strict: true });
     let backupPath: string;
@@ -585,6 +621,7 @@ export class UpNoteRepository {
     };
     const initial = readRow(this.db);
     const patch = prepareNoteUpdate(initial, params);
+    assertNoteHtmlSize(String(patch.html ?? initial.html ?? ""));
     const changedFields = Object.keys(patch);
     const result: UpdateNoteResult = {
       id, dryRun: params.dryRun ?? false, committed: false, changedFields, backupPath: null, appRunning,

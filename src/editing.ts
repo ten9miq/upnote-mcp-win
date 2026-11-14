@@ -2,6 +2,14 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { decodeHTML } from "entities";
 
+// Conservative UTF-8 ceiling for UpNote's documented ~1 MB HTML sync limit.
+export const MAX_NOTE_HTML_BYTES = 1_000_000;
+export function assertNoteHtmlSize(html: string): number {
+  const bytes = Buffer.byteLength(html, "utf8");
+  if (bytes > MAX_NOTE_HTML_BYTES) throw new Error(`UpNote HTML would be ${bytes} UTF-8 bytes; the cloud-sync safety ceiling is ${MAX_NOTE_HTML_BYTES} bytes. Shorten or split the note/section before saving.`);
+  return bytes;
+}
+
 export type UpdateNoteParams = {
   id: string;
   expectedVersion: string;
