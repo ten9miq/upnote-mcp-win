@@ -442,6 +442,7 @@ async function main(): Promise<void> {
         "Live writes may be overwritten by UpNote's UI cache; database verification does not prove cloud sync.",
         "For app-visible edits and sync acknowledgement while running, prefer update_note_in_app or patch_note_in_app over local CDP.",
         "After a conflict or a committed-but-unverified result, inspect the note and backup; never retry blindly.",
+        "Successful backup creation prunes older managed backups within configured generation/byte limits while protecting each note's newest archive; inspect backupRetention for remaining capacity warnings.",
       ].join(" "),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       inputSchema: {
@@ -518,6 +519,7 @@ async function main(): Promise<void> {
         "Unchanged HTML is source-spliced rather than serialized. Title, attachment/protected-object content and unsafe section boundaries are refused. Images outside the changed section may remain untouched.",
         "The final HTML must fit the conservative 1,000,000 UTF-8 byte cloud-sync ceiling. Existing oversized notes can be read and shrunk below it.",
         "Only state=synced with htmlPreserved=true verifies the expected saved HTML, editor and fresh app sync acknowledgement. dryRun previews only compact change summaries. On unknown/incomplete results inspect context/sync, never repeat a mutation automatically.",
+        "backupRetention reports automatic deletion of older managed archives and any limits that could not be met without removing protected latest backups.",
       ].join(" "),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       inputSchema: { id: z.string().min(1), expectedVersion: z.string().regex(/^[a-f\d]{64}$/), operations: z.array(partialOperation).min(1).max(100),
@@ -539,6 +541,7 @@ async function main(): Promise<void> {
         "First get_note and pass its version as expectedVersion. A verified note-only backup is required before the app action. The MCP server never writes UpNote note rows or sync flags in this workflow.",
         "Only state=synced confirms expected content, editor reflection, and a fresh app-reported sync acknowledgement; other-device receipt is not independently checked.",
         "On timeout, conflict or unknown outcome, query get_upnote_bridge_status; never repeat a mutation automatically.",
+        "Older managed backup revisions may be pruned after the new archive is verified. backupRetention reports configured limits, remaining bytes and protected-backup/deletion warnings.",
       ].join(" "),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       inputSchema: {
@@ -567,8 +570,9 @@ async function main(): Promise<void> {
         "Creates a verified backup of the target note's complete SQLite row and stages rich HTML plus text on the Windows clipboard. Refuses images/attachments.",
         "Follow the returned instructions, verify the target note, and paste into its editor; then call complete_app_note_edit with the returned ticket.",
         "Keep the MCP server alive through completion. Tickets expire after ten minutes. Do not use direct SQLite writes for this workflow.",
+        "Backup retention may prune older archives; pending preparations are protected for at least eleven minutes after backup creation. Inspect backupRetention for capacity warnings.",
       ].join(" "),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       inputSchema: {
         id: z.string().min(1),
         expectedVersion: z.string().regex(/^[a-f\d]{64}$/),

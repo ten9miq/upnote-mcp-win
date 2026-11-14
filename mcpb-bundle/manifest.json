@@ -26,7 +26,9 @@
       "env": {
         "UPNOTE_DB": "${user_config.upnote_db}",
         "UPNOTE_CDP_URL": "${user_config.upnote_cdp_url}",
-        "UPNOTE_AUTO_START": "0"
+        "UPNOTE_AUTO_START": "0",
+        "UPNOTE_BACKUP_MAX_GENERATIONS": "${user_config.backup_max_generations}",
+        "UPNOTE_BACKUP_MAX_TOTAL_BYTES": "${user_config.backup_max_total_bytes}"
       }
     }
   },
@@ -62,6 +64,20 @@
       "description": "Path to upnote.sqlite3. Leave empty to use %APPDATA%/UpNote/upnote.sqlite3.",
       "required": false,
       "default": ""
+    },
+    "backup_max_generations": {
+      "type": "number",
+      "title": "Maximum backups per note",
+      "description": "Positive integer; default 10. The newest backup per note/profile and active clipboard preparations are always protected.",
+      "required": false,
+      "default": 10
+    },
+    "backup_max_total_bytes": {
+      "type": "number",
+      "title": "Total managed backup bytes",
+      "description": "Positive integer; default 536870912 (512 MiB). Old removable archives are deleted; protected latest backups may exceed this ceiling.",
+      "required": false,
+      "default": 536870912
     },
     "upnote_cdp_url": {
       "type": "string",

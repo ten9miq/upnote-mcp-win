@@ -11,6 +11,7 @@ This fork starts an independent version line at **0.1.0** as `@ten9miq/upnote-mc
 
 ### Added
 
+- Configurable per-note generation and managed-byte backup retention (defaults: 10 / 512 MiB), latest/archive preparation protection, cross-process locking, safe automatic pruning and `backupRetention` reports
 - `get_note_edit_context` and `patch_note_in_app`: compact reads plus literal text replacement, section replacement/append and heading rename, preserving untouched HTML source
 - Same-snapshot batch planning, overlap/ambiguity/protected-object guards and exact saved-HTML verification using the existing backup/conflict/native sync path
 - Long-note protocol and real-app tests: 154407-character note edited with a 389-byte request, formatting/backup/stale-version checks and a fresh app sync acknowledgement

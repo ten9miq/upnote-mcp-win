@@ -10,6 +10,7 @@ import { NativeConnection, nativeExpression, type NativeChannel } from "./native
 import { assertNativeSchema, assertNativeNoteData, type NativeColumn } from "./compatibility";
 import { connectWithRecovery, launchInstalledUpNote } from "./connection";
 import { backupNote } from "./backup";
+import { refreshBackupRetention, type BackupRetentionReport } from "./backup-retention";
 
 export type { UpdateNoteParams } from "./editing";
 
@@ -26,6 +27,7 @@ type RepositoryOptions = {
 };
 
 export type NativeEditResult = {
+  backupRetention?: BackupRetentionReport;
   id: string;
   applied: boolean | null;
   state: "unchanged" | "synced" | "awaiting_sync" | "awaiting_ui" | "conflict" | "unavailable";
@@ -40,6 +42,7 @@ export type NativeEditResult = {
 };
 
 type AppEditSession = {
+  backupRetention: BackupRetentionReport;
   id: string;
   before: Record<string, unknown>;
   desiredTitle: string;
@@ -49,6 +52,7 @@ type AppEditSession = {
 };
 
 export type AppEditVerification = {
+  backupRetention?: BackupRetentionReport;
   id: string;
   state: "awaiting_edit" | "awaiting_sync" | "synced" | "conflict" | "unavailable";
   applied: boolean;
@@ -61,6 +65,7 @@ export type AppEditVerification = {
 };
 
 export type UpdateNoteResult = {
+  backupRetention?: BackupRetentionReport;
   id: string;
   dryRun: boolean;
   committed: boolean;
@@ -327,9 +332,11 @@ export class UpNoteRepository {
   }
 
   /** Back up the exact target row read under a source DB writer reservation. */
-  private backupBeforeEdit(row: Record<string, unknown>): string {
+  private backupBeforeEdit(row: Record<string, unknown>, protectForMs = 0): { path: string; retention: BackupRetentionReport } {
     const root = resolve(this.options.backupsDir ?? process.env.UPNOTE_BACKUPS_DIR ?? join(dirname(this.dbPath), "MCP Backups"));
-    return backupNote(row, root, this.dbPath);
+    let retention!: BackupRetentionReport;
+    const path = backupNote(row, root, this.dbPath, { protectForMs, onRetention: report => { retention = report; } });
+    return { path, retention };
   }
 
   private async nativeConnection(): Promise<NativeChannel> {
@@ -407,7 +414,8 @@ export class UpNoteRepository {
         this.nativeSchemaCompatibility(writer);
         const current = writer.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id=?").get(id);
         if (!current || noteVersion(current) !== expectedVersion) throw new Error("The note changed before backup. Read get_note again.");
-        result.backupPath = this.backupBeforeEdit(current);
+        const backup = this.backupBeforeEdit(current);
+        result.backupPath = backup.path; result.backupRetention = backup.retention;
       } finally {
         if (writer.inTransaction) writer.exec("ROLLBACK");
         writer.close();
@@ -477,7 +485,7 @@ export class UpNoteRepository {
     }
     // Never serialize the entire old/new note or a full HTML preview to MCP.
     return { id: result.id, applied: result.applied, state: result.state, uiUpdated: result.uiUpdated,
-      cloudSync: result.cloudSync, otherDeviceVerified: false, backupPath: result.backupPath,
+      cloudSync: result.cloudSync, otherDeviceVerified: false, backupPath: result.backupPath, backupRetention: result.backupRetention,
       version: result.note?.version ?? null, sync: result.note?.sync ?? null, dryRun: !!params.dryRun,
       htmlPreserved, changes: plan.changes, htmlCharsBefore: plan.htmlCharsBefore, htmlCharsAfter: plan.htmlCharsAfter,
       compatibility: result.compatibility, message: result.message };
@@ -506,11 +514,14 @@ export class UpNoteRepository {
     // Snapshot under a writer reservation, but do not update any UpNote rows.
     const writer = new Database(this.dbPath, { readwrite: true, create: false, strict: true });
     let backupPath: string;
+    let backupRetention: BackupRetentionReport;
     try {
       writer.exec("PRAGMA busy_timeout=2000; BEGIN IMMEDIATE");
       const current = writer.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id=?").get(params.id);
       if (!current || noteVersion(current) !== params.expectedVersion) throw new Error("The note changed before backup. Read get_note again.");
-      backupPath = this.backupBeforeEdit(current);
+      // Keep pending clipboard preparations beyond their ten-minute ticket lifetime.
+      const backup = this.backupBeforeEdit(current, 11 * 60_000);
+      backupPath = backup.path; backupRetention = backup.retention;
     } finally {
       if (writer.inTransaction) writer.exec("ROLLBACK");
       writer.close();
@@ -519,13 +530,16 @@ export class UpNoteRepository {
     const payloadPath = join(dirname(backupPath), "app-edit-clipboard.json");
     writeFileSync(payloadPath, JSON.stringify({ kind: "upnote-app-edit-v1", id: params.id, title: desiredTitle, html, text: desiredText }, null, 2));
     await (this.options.stageClipboard ?? stageNoteClipboard)(payloadPath);
+    const refreshed = refreshBackupRetention(backupPath);
+    backupRetention = { ...refreshed, deletedArchives: refreshed.deletedArchives + backupRetention.deletedArchives,
+      deletedBytes: refreshed.deletedBytes + backupRetention.deletedBytes, warnings: [...new Set([...backupRetention.warnings, ...refreshed.warnings])] };
     // Fail rather than encouraging a stale clipboard paste if staging took time.
     const current = this.db.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id=?").get(params.id);
     if (!current || noteVersion(current) !== params.expectedVersion) throw new Error(`The note changed during preparation. Do not paste. Backup: ${backupPath}`);
     for (const [key, value] of this.appEdits) if (Date.now() - value.preparedAt > 10 * 60_000) this.appEdits.delete(key);
-    this.appEdits.set(ticket, { id: params.id, before, desiredTitle, desiredText, backupPath, preparedAt: Date.now() });
+    this.appEdits.set(ticket, { id: params.id, before, desiredTitle, desiredText, backupPath, backupRetention, preparedAt: Date.now() });
     return {
-      ticket, id: params.id, currentTitle: String(before.title ?? ""), title: desiredTitle, url: noteUrl(params.id), backupPath, clipboardStaged: true,
+      ticket, id: params.id, currentTitle: String(before.title ?? ""), title: desiredTitle, url: noteUrl(params.id), backupPath, backupRetention, clipboardStaged: true,
       proposed: { title: desiredTitle, text: desiredText, html },
       instructions: [
         "Use the computer-use client to open the note URL and verify the target note ID and currentTitle (the proposed title may differ). Do not paste into any other app or field.",
@@ -543,7 +557,7 @@ export class UpNoteRepository {
     const normalize = (text: unknown) => String(text ?? "").replace(/\s+/gu, " ").trim();
     const result: AppEditVerification = {
       id: session.id, state: "awaiting_edit", applied: false, cloudSync: "unverified", otherDeviceVerified: false,
-      backupPath: session.backupPath, syncedAt: null, note: null, message: "The staged edit has not been saved by UpNote yet.",
+      backupPath: session.backupPath, backupRetention: session.backupRetention, syncedAt: null, note: null, message: "The staged edit has not been saved by UpNote yet.",
     };
     const deadline = Date.now() + Math.min(30_000, Math.max(0, waitMs));
     do {
@@ -630,7 +644,8 @@ export class UpNoteRepository {
         assertAppState(current);
         // Holding the writer reservation prevents another SQL writer from changing
         // the snapshot between the backup and this edit. Readers remain available.
-        result.backupPath = this.backupBeforeEdit(current);
+        const backup = this.backupBeforeEdit(current);
+        result.backupPath = backup.path; result.backupRetention = backup.retention;
         assertAppState(current);
         const updatedAt = Math.max(Date.now(), Number(current.updatedAt ?? 0) + 1);
         writer.query(`UPDATE notes SET ${changedFields.map((key) => `"${key}" = ?`).join(", ")}, synced = 0, revision = COALESCE(revision, 0) + 1, updatedAt = ? WHERE id = ? AND deleted = 0 AND trashed = 0`)
