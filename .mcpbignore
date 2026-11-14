@@ -1,5 +1,13 @@
 .git
 .github
+.cache
+.agents
+.codex
+.env*
+*.sqlite*
+*.db
+*.tgz
+MCP Backups
 .cursor
 node_modules
 dist

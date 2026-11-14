@@ -14,8 +14,21 @@ import {
   type TagResult,
 } from "./upnote";
 import { openUpNoteUrl } from "./url";
+import packageInfo from "../package.json";
 
-const repository = new UpNoteRepository();
+// Advertise MCP tools even if the database is temporarily unavailable at startup.
+const repository = new UpNoteRepository(undefined, { lazyOpen: true });
+const headingSelector = z.object({
+  heading: z.string().min(1).max(64_000).optional(), level: z.number().int().min(1).max(6).optional(),
+  occurrence: z.number().int().min(1).optional(), index: z.number().int().min(1).optional(),
+}).refine(value => value.heading !== undefined || value.index !== undefined, "Provide heading or index");
+const partialOperation = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("replace_text"), find: z.string().min(1).max(64_000), replacement: z.string().max(1_000_000),
+    occurrence: z.number().int().min(1).optional(), all: z.boolean().optional(), expectedMatches: z.number().int().min(1).max(10_000).optional(), section: headingSelector.optional() }),
+  z.object({ type: z.literal("replace_section"), section: headingSelector, content: z.string().max(1_000_000), contentFormat: z.enum(["markdown", "text"]).optional() }),
+  z.object({ type: z.literal("append_section"), section: headingSelector, content: z.string().min(1).max(1_000_000), contentFormat: z.enum(["markdown", "text"]).optional() }),
+  z.object({ type: z.literal("rename_heading"), section: headingSelector, heading: z.string().min(1).max(64_000) }),
+]);
 
 function formatSearchResults(query: string, notes: ReturnType<UpNoteRepository["searchNotes"]>): string {
   if (notes.length === 0) {
@@ -73,6 +86,7 @@ function formatNoteDetail(note: ReturnType<UpNoteRepository["getNote"]>): string
     `url: ${note.url}`,
     `updatedAt: ${note.updatedAt ?? "unknown"}`,
     `createdAt: ${note.createdAt ?? "unknown"}`,
+    `version: ${note.version}`,
     "",
     note.content || "(no content)",
   ].join("\n");
@@ -107,8 +121,8 @@ function formatTimeBasedResults(label: string, notes: ReturnType<UpNoteRepositor
 
 async function main(): Promise<void> {
   const server = new McpServer({
-    name: "upnote-reader",
-    version: "0.1.0",
+    name: packageInfo.name,
+    version: packageInfo.version,
   });
 
   server.registerTool(
@@ -418,6 +432,176 @@ async function main(): Promise<void> {
   );
 
   server.registerTool(
+    "update_note",
+    {
+      description: [
+        "Edit an existing note without changing its ID, after a verified backup of that note's complete SQLite row.",
+        "First call get_note and pass its version as expectedVersion. Use dryRun=true to preview.",
+        "content replaces the body by default; mode=append preserves existing rich text and attachments.",
+        "Quit UpNote for normal edits. allowWhileRunning=true enables experimental live writes only for a synced note.",
+        "Live writes may be overwritten by UpNote's UI cache; database verification does not prove cloud sync.",
+        "For app-visible edits and sync acknowledgement while running, prefer update_note_in_app or patch_note_in_app over local CDP.",
+        "After a conflict or a committed-but-unverified result, inspect the note and backup; never retry blindly.",
+      ].join(" "),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      inputSchema: {
+        id: z.string().min(1),
+        expectedVersion: z.string().regex(/^[a-f\d]{64}$/).describe("version from the latest get_note result"),
+        title: z.string().min(1).optional().describe("Optional new title"),
+        content: z.string().optional().describe("Body without the title; empty string clears the body in replace mode"),
+        contentFormat: z.enum(["markdown", "text"]).optional(),
+        mode: z.enum(["replace", "append"]).optional(),
+        dryRun: z.boolean().optional().describe("Preview changed fields without writing or creating a backup"),
+        allowWhileRunning: z.boolean().optional().describe("Explicitly permit experimental live edits; default false"),
+      },
+    },
+    async (params) => {
+      const result = await repository.updateNote(params);
+      const failed = result.databaseVerification === "conflict" || result.databaseVerification === "unavailable";
+      return {
+        isError: failed,
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: { ...result, dbPath: repository.getResolvedDbPath() },
+      };
+    },
+  );
+
+  server.registerTool(
+    "ensure_upnote_connection",
+    {
+      description: "Prepare and verify the Codex-to-UpNote connection. With UPNOTE_AUTO_START=1, starts a closed UpNote in the background and waits for its CDP renderer/data to become ready. Checks profile, API and DB compatibility. Never force-restarts a running app, unlocks it, or retries note mutations. Use this before a workflow or after an app restart.",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {},
+    },
+    async () => {
+      const result = await repository.getNativeBridgeStatus();
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: { ...result, dbPath: repository.getResolvedDbPath() } };
+    },
+  );
+
+  server.registerTool(
+    "get_upnote_bridge_status",
+    {
+      description: "Check the opt-in local UpNote CDP bridge without Computer Use. Requires UPNOTE_CDP_URL. With UPNOTE_AUTO_START=1, prepares a closed app automatically. Checks DB columns/affinities/unique IDs and internal methods/state types, plus profile/lock state. App version is informational. Optional id validates note data and reports editor/sync metadata. Never force-restarts or unlocks UpNote.",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: { id: z.string().min(1).optional() },
+    },
+    async ({ id }) => {
+      const result = await repository.getNativeBridgeStatus(id);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: { ...result, dbPath: repository.getResolvedDbPath() } };
+    },
+  );
+
+  server.registerTool(
+    "get_note_edit_context",
+    {
+      description: "Read compact note metadata/version, UTF-8 HTML size/sync status and paginated body headings without returning the whole note. Optional find returns literal visible-text matches with short context. Optional section (heading/level/occurrence or outline index) returns only that section, bounded by maxChars (default 8000, maximum 64000). The leading title is protected. Use the returned version for patch_note_in_app; recheck context/sync after incomplete edits instead of fetching the whole body.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: { id: z.string().min(1), find: z.string().min(1).max(64_000).optional(), section: headingSelector.optional(),
+        sectionFormat: z.enum(["html", "text"]).optional(), maxChars: z.number().int().min(1).max(64_000).optional(),
+        offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(100).optional() },
+    },
+    async ({ id, ...options }) => {
+      const result = repository.getNoteEditContext(id, options);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: { ...result, dbPath: repository.getResolvedDbPath() } };
+    },
+  );
+
+  server.registerTool(
+    "patch_note_in_app",
+    {
+      description: [
+        "Apply 1..100 partial operations to the existing HTML server-side, without resending/returning the whole note through MCP.",
+        "Read get_note_edit_context first and pass expectedVersion. All operations target the same original snapshot; overlapping edits are refused. They are saved together with one verified backup and the normal native app conflict/UI/sync checks.",
+        "replace_text matches literal visible text within a block, across inline tags, and escapes the replacement as text; it preserves tags/attributes and inherits the first matched text node's style. Ambiguous matches require occurrence or all plus expectedMatches.",
+        "replace_section changes the body after a heading through the next same/higher-level heading; append_section adds at its end; rename_heading changes its label. Duplicate headings require an explicit level/occurrence or outline index.",
+        "Unchanged HTML is source-spliced rather than serialized. Title, attachment/protected-object content and unsafe section boundaries are refused. Images outside the changed section may remain untouched.",
+        "The final HTML must fit the conservative 1,000,000 UTF-8 byte cloud-sync ceiling. Existing oversized notes can be read and shrunk below it.",
+        "Only state=synced with htmlPreserved=true verifies the expected saved HTML, editor and fresh app sync acknowledgement. dryRun previews only compact change summaries. On unknown/incomplete results inspect context/sync, never repeat a mutation automatically.",
+      ].join(" "),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      inputSchema: { id: z.string().min(1), expectedVersion: z.string().regex(/^[a-f\d]{64}$/), operations: z.array(partialOperation).min(1).max(100),
+        dryRun: z.boolean().optional(), waitMs: z.number().int().min(0).max(30_000).optional() },
+    },
+    async (params) => {
+      const result = await repository.patchNoteInApp(params);
+      return { isError: result.state === "conflict" || result.state === "unavailable",
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: { ...result, dbPath: repository.getResolvedDbPath() } };
+    },
+  );
+
+  server.registerTool(
+    "update_note_in_app",
+    {
+      description: [
+        "Edit the same note through UpNote's internal updateNotes action over local CDP, refresh its editor and await app sync acknowledgement. No Computer Use, typing or clipboard.",
+        "Requires the opt-in bridge (UPNOTE_CDP_URL), compatible internal APIs and DB structure/data, the correct profile, and no unsaved editor changes or open pop-out note windows. App version is informational only.",
+        "First get_note and pass its version as expectedVersion. A verified note-only backup is required before the app action. The MCP server never writes UpNote note rows or sync flags in this workflow.",
+        "Only state=synced confirms expected content, editor reflection, and a fresh app-reported sync acknowledgement; other-device receipt is not independently checked.",
+        "On timeout, conflict or unknown outcome, query get_upnote_bridge_status; never repeat a mutation automatically.",
+      ].join(" "),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      inputSchema: {
+        id: z.string().min(1), expectedVersion: z.string().regex(/^[a-f\d]{64}$/),
+        title: z.string().min(1).optional(), content: z.string().optional(),
+        contentFormat: z.enum(["markdown", "text"]).optional(), mode: z.enum(["replace", "append"]).optional(),
+        dryRun: z.boolean().optional(), waitMs: z.number().int().min(0).max(30_000).optional(),
+      },
+    },
+    async ({ waitMs, ...params }) => {
+      const result = await repository.updateNoteInApp(params, waitMs);
+      return {
+        isError: result.state === "conflict" || result.state === "unavailable",
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: { ...result, dbPath: repository.getResolvedDbPath() },
+      };
+    },
+  );
+
+  server.registerTool(
+    "prepare_app_note_edit",
+    {
+      description: [
+        "Prepare a backed-up app-native edit without writing the UpNote database. Windows only; UpNote must be running and the note synced.",
+        "Requires a computer-use client to apply the edit to UpNote's editor. Read get_note first and pass its version.",
+        "Creates a verified backup of the target note's complete SQLite row and stages rich HTML plus text on the Windows clipboard. Refuses images/attachments.",
+        "Follow the returned instructions, verify the target note, and paste into its editor; then call complete_app_note_edit with the returned ticket.",
+        "Keep the MCP server alive through completion. Tickets expire after ten minutes. Do not use direct SQLite writes for this workflow.",
+      ].join(" "),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      inputSchema: {
+        id: z.string().min(1),
+        expectedVersion: z.string().regex(/^[a-f\d]{64}$/),
+        title: z.string().min(1).optional(),
+        content: z.string().optional().describe("Body without title"),
+        contentFormat: z.enum(["markdown", "text"]).optional(),
+        mode: z.enum(["replace", "append"]).optional(),
+      },
+    },
+    async (params) => {
+      const result = await repository.prepareAppNoteEdit(params);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: { ...result, dbPath: repository.getResolvedDbPath() } };
+    },
+  );
+
+  server.registerTool(
+    "complete_app_note_edit",
+    {
+      description: "Read-only verification after the computer-use client pastes a prepared edit into UpNote. Waits for matching content under the original ID and a fresh app sync acknowledgement. Only state=synced acknowledges sync; awaiting states are incomplete. Never changes synced/syncedAt or retries input. Other-device receipt is not independently verified.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: { ticket: z.string().uuid(), waitMs: z.number().int().min(0).max(30_000).optional() },
+    },
+    async ({ ticket, waitMs }) => {
+      const result = await repository.completeAppNoteEdit(ticket, waitMs);
+      return {
+        isError: result.state === "conflict" || result.state === "unavailable",
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: { ...result, dbPath: repository.getResolvedDbPath() },
+      };
+    },
+  );
+
+  server.registerTool(
     "create_note",
     {
       description: [
@@ -520,6 +704,12 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  if (process.env.UPNOTE_AUTO_START === "1") {
+    void repository.getNativeBridgeStatus().catch(error => {
+      // Startup failures must not kill stdio or remove read-only/search tools.
+      console.error(`UpNote background preparation: ${String(error)}`);
+    });
+  }
 }
 
 main().catch((error) => {

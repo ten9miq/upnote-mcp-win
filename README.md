@@ -1,408 +1,192 @@
-# upnote-mcp
+# upnote-mcp-win
 
-`upnote-mcp` is a read-only MCP server for reading local UpNote data from SQLite over stdio.
+Windows MCP server for searching UpNote and **editing a running UpNote app through local Chrome DevTools Protocol (CDP)**. It keeps the note ID, backs up before saving, checks the editor update and waits for a fresh app sync acknowledgement. Partial edits preserve unchanged HTML without sending the whole note through the AI client.
 
-This is an unofficial project and is not affiliated with, endorsed by, or maintained by UpNote.
+[日本語](README_ja.md) · [Architecture and fallback workflows](docs/architecture.md) · [Verification](docs/verification.md) · [Release preparation](docs/releasing.md)
 
-## Features
+An independent Windows fork of [bellx2/upnote-mcp](https://github.com/bellx2/upnote-mcp), maintained at [ten9miq/upnote-mcp-win](https://github.com/ten9miq/upnote-mcp-win). Unofficial; not affiliated with or supported by UpNote. CDP editing uses undocumented app internals, not an official UpNote API.
 
-- `search_notes`: search notes by title, body text, or summary
-- `list_recent_notes`: list the most recently updated notes
-- `list_notes_this_week`: list notes updated during the current week
-- `list_notes_this_month`: list notes updated during the current month
-- `find_notes`: combine period, keyword, and tag filters in one call
-- `find_and_open_note`: find matching notes and open the most recent match in UpNote
-- `open_note`: open a note in the UpNote app by note ID
-- `get_note`: fetch the full contents of a note by note ID
-- `open_notebook`: open a notebook in the UpNote app by notebook ID
-- `list_notebooks`: list notebooks with note counts
-- `create_note`: create a new note through UpNote's official URL scheme
-- `list_tags`: list tags
-- `search_by_tag`: list notes for a tag
+## Identity and distribution
 
-This project is intentionally read-only. It does not write to the UpNote database.
-Safe note creation and open actions are performed through UpNote's official URL scheme instead of direct database writes.
+| Item | This fork |
+| --- | --- |
+| Repository / issues | [ten9miq/upnote-mcp-win](https://github.com/ten9miq/upnote-mcp-win) / [Issues](https://github.com/ten9miq/upnote-mcp-win/issues) |
+| npm package identity | @ten9miq/upnote-mcp-win |
+| Executable / bundle name | upnote-mcp-win |
+| Version line | 0.1.0, independent of upstream's 0.2.x |
 
-## Package Name
+**The documented installation path is a source checkout.** A package name and build configuration do not mean an npm package or downloadable bundle has been released. Do not install @bellx2/upnote-mcp expecting this fork's CDP features. Verify an actual release in this repository before using registry/bundle installation instructions.
 
-This package is prepared to be published as `@bellx2/upnote-mcp`.
+## How CDP editing differs
+
+The comparison describes the linked READMEs checked on 2026-11-14; it is not a claim about every similarly named server.
+
+| Implementation | Read / create | Existing-note editing | Running app / sync |
+| --- | --- | --- | --- |
+| [bellx2/upnote-mcp](https://github.com/bellx2/upnote-mcp#readme), upstream | Read-only SQLite / official URL scheme | No editing tool documented | No live-edit workflow documented |
+| [bug-breeder/upnote-mcp](https://github.com/bug-breeder/upnote-mcp#readme), design reference | SQLite / URL scheme | Python; direct SQLite edits, moves, tags, deletes and merges | README requires quitting the app for reliable edits; running-app override available |
+| **This fork** | Read-only SQLite / URL scheme | Bun/TypeScript; CDP calls the app's internal save action; partial text/section changes | App stays running; checks saved content, editor and fresh sync acknowledgement; guarded direct-write fallback also retained |
+
+This fork focuses on live content editing. It does not implement bug-breeder's move/delete/merge/tag-management tools.
+
+~~~mermaid
+flowchart LR
+  AI["MCP client"] -->|stdio| MCP["upnote-mcp-win"]
+  MCP -->|read-only search| DB[("Local SQLite")]
+  MCP -->|verified pre-edit note archive| Backup[("Backup")]
+  MCP -->|local CDP: internal save action| App["Running UpNote"]
+  App -->|save| DB
+  App -->|its own sync process| Cloud["UpNote cloud"]
+  MCP -->|verify saved HTML / editor / sync metadata| App
+~~~
+
+For the CDP workflow, MCP never updates note rows or sync flags itself. It obtains a short SQLite writer reservation to check the snapshot and create a consistent backup, then releases it before asking the app to save. This updates the app's own state and sync path. Creation still uses UpNote's official URL scheme.
 
 ## Requirements
 
-- `macOS` or `Windows 10/11`
-- `bun >= 1.3.0` installed on the machine that runs the server
-- UpNote desktop app installed
-- Default UpNote database paths:
+- Windows 10/11 and a locally installed UpNote desktop app. The measured environment was **Windows / UpNote 9.22.9 / Bun 1.4.0**; see [verification scope](docs/verification.md).
+- [Bun](https://bun.sh) **1.4.0 or newer** for the source package, including Markdown conversion. Node.js alone is insufficient.
+- Git and Windows PowerShell for these setup instructions.
+- The default everyday/automatic launcher requires the **Microsoft Store edition**. A manually specified UpNote.exe can use the one-time launcher; automatic startup for that installation is not provided.
+- A signed-in, unlocked UpNote app with network access for cloud sync checks. Local search does not require CDP or an online account.
 
-```text
-# macOS
-~/Library/Containers/com.getupnote.desktop/Data/Library/Application Support/UpNote/upnote.sqlite3
+Inherited macOS database/URL support remains in source, but this fork's CDP workflow and Windows bundle are not claimed to be tested on macOS/Linux.
 
-# Windows
-%APPDATA%\UpNote\upnote.sqlite3
-```
+## Install from source
 
-If your database lives somewhere else, set `UPNOTE_DB`.
+Run in PowerShell:
 
-## Install
-
-```bash
-bun install
-```
-
-## Run
-
-```bash
-bun run start
-```
-
-For normal use, prefer the published package:
-
-```bash
-bunx @bellx2/upnote-mcp
-```
-
-or:
-
-```bash
-npx @bellx2/upnote-mcp
-```
-
-`npx` support still depends on `bun` being installed, because this package uses Bun-specific APIs such as `bun:sqlite`.
-
-For development with file watching:
-
-```bash
-bun run dev
-```
-
-## Install via MCP Bundle (`.mcpb`)
-
-For Claude Desktop on macOS, you can also install a prebuilt MCP Bundle instead of running `bunx`.
-
-An `.mcpb` file is a zip archive containing a standalone MCP server and a `manifest.json`. Claude Desktop can install it with a double click, similar to a browser extension.
-
-### Download
-
-Tagged releases include an `.mcpb` asset on [GitHub Releases](https://github.com/bellx2/upnote-mcp/releases).
-
-Example file name:
-
-```text
-upnote-mcp-0.2.7.mcpb
-```
-
-### Install in Claude Desktop
-
-1. Download the `.mcpb` file from GitHub Releases
-2. Double-click the file
-3. Follow the Claude Desktop installation dialog
-4. Optionally set the UpNote database path during setup. The default path works for the standard UpNote desktop app location
-
-The bundle includes a compiled macOS binary, so Bun is not required for this install path.
-
-### Build locally
-
-To rebuild the bundle from source:
-
-```bash
-bun run build:mcpb
-```
-
-This creates `dist/upnote-mcp.mcpb`.
-
-Release builds run on GitHub Actions (`macos-latest`) and are attached automatically when a `v*` tag is pushed.
-
-## Environment Variables
-
-- `UPNOTE_DB`: absolute path to `upnote.sqlite3`
-
-Example:
-
-```bash
-export UPNOTE_DB="$HOME/Library/Containers/com.getupnote.desktop/Data/Library/Application Support/UpNote/upnote.sqlite3"
-```
-
-Windows PowerShell:
-
-```powershell
-$env:UPNOTE_DB = "$env:APPDATA\UpNote\upnote.sqlite3"
-```
-
-## Permissions
-
-On first run, your MCP client may show permission prompts for command execution and local file access.
-
-This is expected because the server:
-
-- launches through `bun`
-- reads your local UpNote SQLite database
-- may open the UpNote app for `open_note`, `open_notebook`, or `create_note`
-
-If you deny these permissions, note search and retrieval will not work. After granting access, you may need to restart the MCP server in Cursor or Claude Desktop.
-
-## MCP Config Example
-
-### Recommended: published package
-
-#### Cursor
-
-```json
-{
-  "mcpServers": {
-    "upnote": {
-      "command": "bunx",
-      "args": ["@bellx2/upnote-mcp"]
-    }
-  }
-}
-```
-
-#### Claude Desktop
-
-##### Option 1: MCP Bundle (recommended)
-
-Download and install the `.mcpb` file from [GitHub Releases](https://github.com/bellx2/upnote-mcp/releases). No manual JSON editing is required.
-
-##### Option 2: published package
-
-```json
-{
-  "mcpServers": {
-    "upnote": {
-      "command": "bunx",
-      "args": ["@bellx2/upnote-mcp"]
-    }
-  }
-}
-```
-
-### Local development checkout
-
-#### Cursor
-
-```json
-{
-  "mcpServers": {
-    "upnote": {
-      "command": "/absolute/path/to/bun",
-      "args": ["run", "/absolute/path/to/upnote-mcp/src/index.ts"]
-    }
-  }
-}
-```
-
-#### Claude Desktop
-
-```json
-{
-  "mcpServers": {
-    "upnote": {
-      "command": "/absolute/path/to/bun",
-      "args": ["run", "/absolute/path/to/upnote-mcp/src/index.ts"]
-    }
-  }
-}
-```
-
-#### Codex on Windows
-
-Register the local checkout after running `bun install`. Use the absolute path to the installed Bun executable when Codex does not inherit the interactive shell `PATH`.
-
-```powershell
-codex mcp add upnote-local --env "UPNOTE_DB=$env:APPDATA\UpNote\upnote.sqlite3" -- "C:\Users\you\.bun\bin\bun.exe" run "C:\absolute\path\to\upnote-mcp\src\index.ts"
-```
-
-Verify the registration:
-
-```powershell
-codex mcp list
-codex mcp get upnote-local
-```
-
-This starts the local source checkout; it does not use `bunx @bellx2/upnote-mcp`. Database reads remain read-only. `open_note`, `open_notebook`, and `create_note` use the registered `upnote://` URL scheme handler rather than writing SQLite directly.
-
-## Example Workflows
-
-Try prompts like:
-
-- `Search UpNote for "travel" and show me the first result`
-- `Show me my 10 most recent UpNote notes`
-- `Show me this week's notes`
-- `Show me this month's notes`
-- `Find this week's AI notes`
-- `Open this week's AI note`
-- `Find this month's notes tagged meeting`
-- `Open the latest note tagged meeting`
-- `List my UpNote tags and open the note that matches the tag "meeting"`
-- `Find notes about "launch", summarize them, and create a new UpNote note with the summary`
-- `List notebooks and open the one named "Research"`
-
-## Tool Reference
-
-### `search_notes`
-
-Input:
-
-```json
-{
-  "query": "travel",
-  "limit": 5
-}
-```
-
-### `list_recent_notes`
-
-Input:
-
-```json
-{
-  "limit": 10
-}
-```
-
-### `list_notes_this_week`
-
-Input:
-
-```json
-{
-  "limit": 20
-}
-```
-
-### `list_notes_this_month`
-
-Input:
-
-```json
-{
-  "limit": 20
-}
-```
-
-### `find_notes`
-
-Input:
-
-```json
-{
-  "period": "this_week",
-  "query": "AI",
-  "limit": 10
-}
-```
-
-Or:
-
-```json
-{
-  "period": "this_month",
-  "tag": "meeting",
-  "limit": 10
-}
-```
-
-### `find_and_open_note`
-
-Input:
-
-```json
-{
-  "period": "this_week",
-  "query": "AI",
-  "limit": 10
-}
-```
-
-Or:
-
-```json
-{
-  "period": "recent",
-  "tag": "meeting",
-  "limit": 10
-}
-```
-
-### `get_note`
-
-Input:
-
-```json
-{
-  "id": "019fd239-a98a-742b-b75b-cee66e7aa830"
-}
-```
-
-### `open_note`
-
-Input:
-
-```json
-{
-  "id": "019fd239-a98a-742b-b75b-cee66e7aa830"
-}
-```
-
-### `open_notebook`
-
-Input:
-
-```json
-{
-  "id": "3f03c742-1270-4d35-a5bc-c7d98580d6fc"
-}
-```
-
-### `list_notebooks`
-
-Input:
-
-```json
-{}
-```
-
-### `list_tags`
-
-Input:
-
-```json
-{}
-```
-
-### `search_by_tag`
-
-Input:
-
-```json
-{
-  "tag": "meeting",
-  "limit": 5
-}
-```
-
-### `create_note`
-
-Input:
-
-```json
-{
-  "title": "Meeting Notes",
-  "text": "# Summary\n\nDraft created by MCP.",
-  "markdown": true,
-  "newWindow": false
-}
-```
-
-## Verification
-
-```bash
+~~~powershell
+git clone https://github.com/ten9miq/upnote-mcp-win.git
+Set-Location upnote-mcp-win
+bun install --frozen-lockfile
 bun run check
-bun run smoke
+(Get-Command bun.exe).Source
+~~~
+
+Keep the checkout in a stable directory. Use its absolute path and the printed bun.exe path in the MCP configuration. The default database is %APPDATA%\UpNote\upnote.sqlite3; override UPNOTE_DB for another profile/path. Search-only setup can omit the CDP environment variables and the next step.
+
+### 1. Start UpNote with CDP
+
+Save any current work and **exit UpNote normally**, including its tray process. From the checkout:
+
+~~~powershell
+powershell.exe -NoProfile -File .\scripts\start-upnote-bridge.ps1
+# For a non-Store installation, provide the actual installed executable:
+# powershell.exe -NoProfile -File .\scripts\start-upnote-bridge.ps1 -ExePath 'C:\path\to\UpNote.exe'
+~~~
+
+The launcher uses --remote-debugging-address=127.0.0.1 and --remote-debugging-port=19330, checks the app/CDP owner and prints the endpoint. It refuses a running app and never force-restarts it. Administrator rights are not part of normal setup. If a local execution policy blocks a script, review that script and follow your organization's policy; the setup does not change machine-wide policy.
+
+CDP is a powerful local debugging interface. It remains available until UpNote exits. The server accepts literal loopback HTTP origins only; do not expose the port through a network bind, proxy or tunnel. Other local programs with access to the port may control the app. Use this on a trusted local machine.
+
+### 2. Register with an MCP client
+
+For a JSON-based stdio MCP client (for example Cursor/Claude Desktop), replace the paths with your own:
+
+~~~json
+{
+  "mcpServers": {
+    "upnote-mcp-win": {
+      "command": "C:\\Users\\YOUR_NAME\\.bun\\bin\\bun.exe",
+      "args": ["run", "C:\\path\\to\\upnote-mcp-win\\src\\index.ts"],
+      "env": {
+        "UPNOTE_DB": "C:\\Users\\YOUR_NAME\\AppData\\Roaming\\UpNote\\upnote.sqlite3",
+        "UPNOTE_CDP_URL": "http://127.0.0.1:19330"
+      }
+    }
+  }
+}
+~~~
+
+Codex uses the same command/arguments/environment in its MCP TOML configuration. See the [Codex example](docs/architecture.md#codex-configuration). A 30-second startup timeout and 90-second tool timeout leave room for startup, note backup and sync checks. Reconnect the MCP client after changing its configuration or updating this checkout. Existing registrations with another server key can keep that key; tool names are unchanged.
+
+Call ensure_upnote_connection or get_upnote_bridge_status first. The bridge checks the database path, runtime capabilities and schema. It will not unlock the app or bypass login.
+
+### 3. Optional: everyday shortcuts and automatic preparation
+
+For the Store edition, copy the stable launcher templates once:
+
+~~~powershell
+$helperDir = Join-Path $env:LOCALAPPDATA 'UpNoteMcp'
+New-Item -ItemType Directory -Path $helperDir -Force | Out-Null
+Copy-Item -LiteralPath .\scripts\start-upnote-default.ps1 -Destination (Join-Path $helperDir 'launch.ps1')
+Copy-Item -LiteralPath .\scripts\upnote-default.vbs -Destination (Join-Path $helperDir 'launch.vbs')
+~~~
+
+Create a Windows shortcut targeting wscript.exe with arguments "C:\Users\YOUR_NAME\AppData\Local\UpNoteMcp\launch.vbs". For Windows login startup, put a shortcut in the folder opened by shell:startup and append --background to those arguments. These examples use port 19330.
+
+Switch your usual launch shortcut to this helper and disable UpNote's own automatic startup if it would launch without CDP. Original Store shortcuts/taskbar pins are not modified automatically. The helper resolves the current Store package on every launch instead of storing a version-specific executable path; it reuses an already connected app and refuses a running app without CDP.
+
+Add UPNOTE_AUTO_START=1 to the MCP environment after installing the helper. UPNOTE_AUTO_START_LAUNCHER can override its default path, %LOCALAPPDATA%\UpNoteMcp\launch.ps1. A closed app will then be prepared in the background when MCP starts or a native operation needs it. Parallel clients share startup work. Only connection/readiness checks are retried; note mutations are never replayed automatically.
+
+To turn this off, remove the startup shortcut, restore your usual UpNote shortcut and remove UPNOTE_AUTO_START / UPNOTE_CDP_URL from the MCP configuration. Exit UpNote normally and launch it normally to close the debugging port. No app binary patch is involved.
+
+## Edit without resending a long note
+
+1. Read get_note_edit_context with the note ID and optional find/section filters. It returns a version token, size/sync metadata and bounded excerpts.
+2. Pass that version and only the changes to patch_note_in_app. All operations target the **same original snapshot**; overlapping or ambiguous changes are refused.
+3. Use dryRun=true to validate first. A preview does not write or create a backup. Apply against the same version only if it is still current.
+
+~~~json
+{
+  "id": "NOTE_ID",
+  "expectedVersion": "VERSION_FROM_GET_NOTE_EDIT_CONTEXT",
+  "operations": [
+    { "type": "replace_text", "find": "old phrase", "replacement": "new phrase" },
+    { "type": "replace_section", "section": { "heading": "Next steps", "level": 2 },
+      "content": "- **Revised task**", "contentFormat": "markdown" }
+  ]
+}
+~~~
+
+| Operation | Behavior |
+| --- | --- |
+| replace_text | Literal visible-text replacement within a block, across inline tags. Replacement is escaped text; inherits the first matched text node's style. |
+| replace_section | Replace the body after a heading through the next equal/higher-level heading. Keeps the selected heading. |
+| append_section | Append to that section while keeping existing HTML. |
+| rename_heading | Rename a body heading while keeping its tags/attributes. Excludes the note title. |
+
+Use occurrence for duplicate text, or all=true together with the exact expectedMatches (up to 10000). Headings accept heading with optional level/occurrence, or a one-based outline index. Unchanged HTML is spliced directly from its original source; it is not regenerated from Markdown. The app still receives a full HTML save internally, so small MCP requests do not remove UpNote's note-size limit.
+
+For full body/title replacement or append, use get_note then update_note_in_app with its version. Whole-body replacement cannot preserve every UpNote-specific decoration; partial editing is preferable for local changes.
+
+## Backups, completion and constraints
+
+- **Backup:** every actual edit saves only the target note's complete SQLite row (including HTML, text and stored metadata) to a checked, flushed `note.sqlite3` archive. Other notes/tables and external attachment blobs are excluded. Default: `MCP Backups/edit-…/note.sqlite3` beside the DB; override `UPNOTE_BACKUPS_DIR`. Archives are retained per edit without automatic deletion; existing full-DB backups remain untouched. The backup reservation can briefly block another writer. This is a per-note recovery archive, not a replacement UpNote database; see [per-note recovery details](docs/note-backups.md).
+- **Conflicts:** expectedVersion covers the full note row. Changes in DB/app state, unsaved editor input, locked notes/workspaces, a mismatched profile or open pop-out note windows stop native edits. Capabilities, required columns/affinities, unique IDs and note value types are checked each time; app-version numbers are diagnostic. Equivalent future versions can work, but matching names/types cannot guarantee future API semantics.
+- **Completion:** only state=synced confirms the expected saved content, editor reflection and fresh app sync acknowledgement. Partial edits additionally require htmlPreserved=true. cloudSync=app_acknowledged is **not independent verification on another device**. Offline/timeout/unknown results are incomplete; inspect context/status and the backup instead of automatically repeating the edit or restoring the DB.
+- **Size:** [UpNote documents an approximately 1 MB underlying HTML limit](https://help.getupnote.com/resources/upnote-premium/premium-faqs). This server conservatively refuses final HTML above **1000000 UTF-8 bytes**, including previews. Oversized existing notes can be read and shortened. Native save requests allow 30 seconds; sync verification is separately bounded. MCP's default receive limit is unchanged.
+- **Formatting/attachments:** partial text edits cannot cross block/break/protected-object boundaries. Title and unsafe section layouts are protected. Replacing a section containing images/attachments/protected objects is refused; edits elsewhere and append can preserve them. New attachment insertion is unsupported. New Markdown/text content is converted to HTML; it is not stored as Markdown source.
+- **Other limits:** no move/delete/merge/tag-management API, no official public cloud API integration, no guaranteed sync latency and no guaranteed compatibility with future undocumented internals. URL creation is fire-and-forget and does not return a confirmed new note ID. Search is substring-based, not ranked full-text search.
+
+The server also exposes advanced direct-SQLite update_note and clipboard prepare_app_note_edit / complete_app_note_edit fallbacks. Their guarantees differ from CDP editing; read [the fallback workflows](docs/architecture.md#fallback-workflows) before using them. In particular, a matching direct DB write does not prove UI refresh or cloud sync.
+
+## Tools
+
+| Group | Tools |
+| --- | --- |
+| Search/read | search_notes, list_recent_notes, list_notes_this_week, list_notes_this_month, find_notes, get_note, list_notebooks, list_tags, search_by_tag |
+| Open/create via URL | find_and_open_note, open_note, open_notebook, create_note |
+| CDP connection | ensure_upnote_connection, get_upnote_bridge_status |
+| CDP editing | update_note_in_app, get_note_edit_context, patch_note_in_app |
+| Advanced fallbacks | update_note, prepare_app_note_edit, complete_app_note_edit |
+
+## Development and verification
+
+~~~powershell
+bun install --frozen-lockfile
+bun run check
+bun run test
+bun run pack
+# Windows-only compiled bundle (requires downloading the MCPB packer):
 bun run build:mcpb
-```
+~~~
 
-## Japanese README
+Tests use temporary DBs; the full suite isolates test files into separate OS processes because of observed Bun 1.4.0/Windows VM/native crashes. Process-list and loopback access are required for integration tests. Live-profile scripts are opt-in and restricted to dedicated test notes; they are not run by the automatic suite. [Measured verification and remaining gaps](docs/verification.md) distinguish real app sync acknowledgements from simulated tests.
 
-The previous Japanese README is available at `README_ja.md`.
+See [release preparation](docs/releasing.md) for package/bundle contents and manual publication. Opening an MCPB bundle in Claude Desktop is a separate integration check; a local bundle build alone does not establish it.
+
+## License and attribution
+
+MIT. The original bellx2 copyright notice is retained in [LICENSE](LICENSE). This fork builds on bellx2/upnote-mcp; bug-breeder/upnote-mcp informed the guarded direct-edit design. Neither upstream project maintains or supports this fork. Report fork issues in [this repository](https://github.com/ten9miq/upnote-mcp-win/issues).

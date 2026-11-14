@@ -1,42 +1,51 @@
 {
-  "name": "@bellx2/upnote-mcp",
-  "version": "0.2.7",
-  "description": "Unofficial read-only MCP server for reading local UpNote data.",
+  "name": "@ten9miq/upnote-mcp-win",
+  "version": "0.1.0",
+  "description": "Windows UpNote MCP with CDP-based live editing, source-preserving partial edits, backups and sync acknowledgement checks.",
   "type": "module",
   "module": "src/index.ts",
   "bin": {
-    "upnote-mcp": "src/index.ts"
+    "upnote-mcp-win": "src/index.ts"
   },
   "files": [
     "src",
+    "scripts/start-upnote-bridge.ps1",
+    "scripts/start-upnote-default.ps1",
+    "scripts/upnote-default.vbs",
+    "scripts/verify-upnote-cdp-owner.ts",
+    "docs",
     "README.md",
     "README_ja.md",
-    "CLAUDE.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "license": "MIT",
+  "author": "ten9miq (https://github.com/ten9miq)",
+  "contributors": ["bellx2 (https://github.com/bellx2)"],
+  "keywords": ["upnote", "mcp", "windows", "cdp", "notes"],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bellx2/upnote-mcp.git"
+    "url": "git+https://github.com/ten9miq/upnote-mcp-win.git"
   },
-  "homepage": "https://github.com/bellx2/upnote-mcp#readme",
+  "homepage": "https://github.com/ten9miq/upnote-mcp-win#readme",
   "bugs": {
-    "url": "https://github.com/bellx2/upnote-mcp/issues"
+    "url": "https://github.com/ten9miq/upnote-mcp-win/issues"
   },
   "publishConfig": {
     "access": "public"
   },
   "engines": {
-    "bun": ">=1.3.0"
+    "bun": ">=1.4.0"
   },
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
     "check": "tsc --noEmit",
-    "test": "bun test",
+    "test": "bun run scripts/run-tests.ts",
     "smoke": "bun run scripts/smoke.ts",
     "smoke:mcp": "bun run scripts/mcp-smoke.ts",
-    "build:mcpb": "bun build --compile src/index.ts --outfile dist/upnote-mcp && mkdir -p mcpb-bundle/server && cp dist/upnote-mcp mcpb-bundle/server/upnote-mcp && bunx @anthropic-ai/mcpb pack mcpb-bundle dist/upnote-mcp.mcpb",
+    "pack": "bun pm pack --destination dist",
+    "build:mcpb": "bun run scripts/build-mcpb.ts",
     "prepublishOnly": "bun run check"
   },
   "devDependencies": {
@@ -47,6 +56,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "entities": "^9.0.0",
+    "htmlparser2": "^12.0.0",
     "zod": "^4.4.3"
   }
 }
