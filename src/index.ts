@@ -434,7 +434,7 @@ async function main(): Promise<void> {
     "update_note",
     {
       description: [
-        "Edit an existing note without changing its ID, after a verified full database backup.",
+        "Edit an existing note without changing its ID, after a verified backup of that note's complete SQLite row.",
         "First call get_note and pass its version as expectedVersion. Use dryRun=true to preview.",
         "content replaces the body by default; mode=append preserves existing rich text and attachments.",
         "Quit UpNote for normal edits. allowWhileRunning=true enables experimental live writes only for a synced note.",
@@ -535,7 +535,7 @@ async function main(): Promise<void> {
       description: [
         "Edit the same note through UpNote's internal updateNotes action over local CDP, refresh its editor and await app sync acknowledgement. No Computer Use, typing or clipboard.",
         "Requires the opt-in bridge (UPNOTE_CDP_URL), compatible internal APIs and DB structure/data, the correct profile, and no unsaved editor changes or open pop-out note windows. App version is informational only.",
-        "First get_note and pass its version as expectedVersion. A verified DB backup is required before the app action. The MCP server never writes note rows or sync flags in this workflow.",
+        "First get_note and pass its version as expectedVersion. A verified note-only backup is required before the app action. The MCP server never writes UpNote note rows or sync flags in this workflow.",
         "Only state=synced confirms expected content, editor reflection, and a fresh app-reported sync acknowledgement; other-device receipt is not independently checked.",
         "On timeout, conflict or unknown outcome, query get_upnote_bridge_status; never repeat a mutation automatically.",
       ].join(" "),
@@ -563,7 +563,7 @@ async function main(): Promise<void> {
       description: [
         "Prepare a backed-up app-native edit without writing the UpNote database. Windows only; UpNote must be running and the note synced.",
         "Requires a computer-use client to apply the edit to UpNote's editor. Read get_note first and pass its version.",
-        "Creates a verified full DB backup and stages rich HTML plus text on the Windows clipboard. Refuses images/attachments.",
+        "Creates a verified backup of the target note's complete SQLite row and stages rich HTML plus text on the Windows clipboard. Refuses images/attachments.",
         "Follow the returned instructions, verify the target note, and paste into its editor; then call complete_app_note_edit with the returned ticket.",
         "Keep the MCP server alive through completion. Tickets expire after ten minutes. Do not use direct SQLite writes for this workflow.",
       ].join(" "),

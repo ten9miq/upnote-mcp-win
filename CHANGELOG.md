@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Back up only the complete target note row to a checked/flushed `note.sqlite3` recovery archive before every direct, native or partial edit, excluding unrelated notes/tables. Preserve version guards, no-write-on-backup-failure, and existing full-library backups.
 - Reject final HTML above a conservative 1000000 UTF-8 bytes before backup/write; support inspecting and shrinking an existing oversized note
 - Allow 30 seconds for native save requests; keep bounded read-only discovery and separate sync checks
 - Run the complete test suite via `bun run test`, with per-file OS isolation for observed Bun 1.4.0/Windows shared-state crashes

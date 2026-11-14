@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -9,6 +9,7 @@ import { stageNoteClipboard } from "./clipboard";
 import { NativeConnection, nativeExpression, type NativeChannel } from "./native-bridge";
 import { assertNativeSchema, assertNativeNoteData, type NativeColumn } from "./compatibility";
 import { connectWithRecovery, launchInstalledUpNote } from "./connection";
+import { backupNote } from "./backup";
 
 export type { UpdateNoteParams } from "./editing";
 
@@ -325,30 +326,10 @@ export class UpNoteRepository {
     this.closed = true;
   }
 
-  /** Consistent SQLite snapshot, including committed WAL pages; never copy a live DB file. */
-  private backupBeforeEdit(): string {
+  /** Back up the exact target row read under a source DB writer reservation. */
+  private backupBeforeEdit(row: Record<string, unknown>): string {
     const root = resolve(this.options.backupsDir ?? process.env.UPNOTE_BACKUPS_DIR ?? join(dirname(this.dbPath), "MCP Backups"));
-    mkdirSync(root, { recursive: true });
-    const directory = mkdtempSync(join(root, `edit-${new Date().toISOString().replace(/[:.]/g, "-")}-`));
-    const backupPath = join(directory, "upnote.sqlite3");
-    const reader = new Database(this.dbPath, { readonly: true, create: false, strict: true });
-    try {
-      reader.query("VACUUM main INTO ?").run(backupPath);
-    } finally {
-      reader.close();
-    }
-    const backup = new Database(backupPath, { readonly: true, create: false });
-    try {
-      const checks = backup.query<Record<string, string>, []>("PRAGMA quick_check").all();
-      if (checks.length !== 1 || Object.values(checks[0]!)[0] !== "ok") {
-        throw new Error(`Backup integrity check failed: ${backupPath}`);
-      }
-    } finally {
-      backup.close();
-    }
-    const fd = openSync(backupPath, "r+");
-    try { fsyncSync(fd); } finally { closeSync(fd); }
-    return backupPath;
+    return backupNote(row, root, this.dbPath);
   }
 
   private async nativeConnection(): Promise<NativeChannel> {
@@ -426,7 +407,7 @@ export class UpNoteRepository {
         this.nativeSchemaCompatibility(writer);
         const current = writer.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id=?").get(id);
         if (!current || noteVersion(current) !== expectedVersion) throw new Error("The note changed before backup. Read get_note again.");
-        result.backupPath = this.backupBeforeEdit();
+        result.backupPath = this.backupBeforeEdit(current);
       } finally {
         if (writer.inTransaction) writer.exec("ROLLBACK");
         writer.close();
@@ -529,7 +510,7 @@ export class UpNoteRepository {
       writer.exec("PRAGMA busy_timeout=2000; BEGIN IMMEDIATE");
       const current = writer.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id=?").get(params.id);
       if (!current || noteVersion(current) !== params.expectedVersion) throw new Error("The note changed before backup. Read get_note again.");
-      backupPath = this.backupBeforeEdit();
+      backupPath = this.backupBeforeEdit(current);
     } finally {
       if (writer.inTransaction) writer.exec("ROLLBACK");
       writer.close();
@@ -649,7 +630,7 @@ export class UpNoteRepository {
         assertAppState(current);
         // Holding the writer reservation prevents another SQL writer from changing
         // the snapshot between the backup and this edit. Readers remain available.
-        result.backupPath = this.backupBeforeEdit();
+        result.backupPath = this.backupBeforeEdit(current);
         assertAppState(current);
         const updatedAt = Math.max(Date.now(), Number(current.updatedAt ?? 0) + 1);
         writer.query(`UPDATE notes SET ${changedFields.map((key) => `"${key}" = ?`).join(", ")}, synced = 0, revision = COALESCE(revision, 0) + 1, updatedAt = ? WHERE id = ? AND deleted = 0 AND trashed = 0`)

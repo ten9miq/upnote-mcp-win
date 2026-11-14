@@ -29,7 +29,7 @@ This is an unofficial project and is not affiliated with, endorsed by, or mainta
 - `search_by_tag`: list notes for a tag
 
 Search and retrieval use a read-only connection. Creation and open actions use UpNote's official URL scheme.
-`update_note` is the explicit exception: it uses a separate, short-lived write connection, a full SQLite backup, and a transaction. See [Editing existing notes](#editing-existing-notes).
+`update_note` is the explicit exception: it uses a separate, short-lived write connection, a checked target-note row archive, and a transaction. See [Editing existing notes](#editing-existing-notes).
 
 ## Package Name
 
@@ -259,9 +259,9 @@ Example (the version must come from a fresh `get_note` call):
 
 `content` is the body **without the title**. `title` is optional; a title-only edit preserves body markup when the existing title heading is recognized. `contentFormat` accepts `markdown` (default) or `text`. Raw HTML is treated as text. `mode: "append"` appends while preserving existing HTML and attachment references. Replacing a body containing images/attachments is refused, and importing new images is unsupported. An empty body is allowed only in replace mode. Notebook membership, tags, link indexes, attachment metadata, sharing, pins and bookmarks are not recalculated or changed by this tool; manage those features in UpNote. Replacing Markdown can change unsupported rich-text formatting.
 
-Before mutation the server obtains `BEGIN IMMEDIATE`, rechecks the version, and creates a standalone `VACUUM INTO` snapshot on another read-only source connection. The snapshot includes committed WAL data, passes `quick_check`, and is flushed before updating the note. No edit is committed if backup creation or verification fails. This temporarily reserves the SQLite writer for the duration of the backup; other writers may wait. The edit increments `revision`/`updatedAt` and sets `synced=0`. The note ID and creation date stay unchanged. There is no automatic retry or database restoration.
+Before mutation the server obtains `BEGIN IMMEDIATE`, rechecks the full-row version, and saves only the complete target note row from that transaction to a standalone `note.sqlite3` archive. The source query includes committed WAL data. The archive is reopened, checked with `quick_check`, compared with the expected row version, and flushed before editing. No edit is committed if backup creation or verification fails. The source writer reservation is held for the duration of the backup; other writers may wait. The edit increments `revision`/`updatedAt` and sets `synced=0`. The note ID and creation date stay unchanged. There is no automatic retry or restoration.
 
-The result includes `committed`, `backupPath`, `databaseVerification`, `cloudSync: "unverified"`, and warnings. Backups contain the whole database (including private notes) but do not copy external image/attachment files. To recover, quit UpNote and inspect the backup before restoring anything; replacing the whole DB can undo unrelated changes and is not a cloud-sync rollback. Each real edit retains a separate full backup, so monitor disk usage.
+The result includes `committed`, `backupPath`, `databaseVerification`, `cloudSync: "unverified"`, and warnings. Each real edit keeps a separate target-note row archive under `MCP Backups/edit-…/note.sqlite3` (override `UPNOTE_BACKUPS_DIR`). Other notes/tables and external image/attachment files are excluded; the backup retains all columns and references in the target row. There is no automatic cleanup or conversion of older full-library backups. **Never replace the UpNote database with this per-note archive.** See [backup format, verification and recovery](docs/note-backups.md).
 
 ### Experimental editing while UpNote is running
 
@@ -273,7 +273,7 @@ For direct SQLite edits, quit UpNote during the write and reopen it afterward. F
 
 ### MCP-only internal API editing on Windows
 
-`update_note_in_app` calls the running app's own **`coreStore.updateNotes()`** action over Chromium's local DevTools Protocol (CDP). This updates the in-memory note, normal save/sync pipeline, and current editor. It does not simulate input, use the clipboard, or write note rows/sync flags from MCP. A verified pre-edit DB backup remains mandatory.
+`update_note_in_app` calls the running app's own **`coreStore.updateNotes()`** action over Chromium's local DevTools Protocol (CDP). This updates the in-memory note, normal save/sync pipeline, and current editor. It does not simulate input, use the clipboard, or write note rows/sync flags from MCP. A verified pre-edit note-only backup remains mandatory.
 
 Initial setup requires one normal exit and relaunch of UpNote: the ordinary running process has no CDP listener and cannot be attached after launch on this Windows build. The launcher never kills or restarts an existing app, copies a signed-in profile, modifies app binaries, or persists OS startup settings.
 

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -70,11 +70,30 @@ for (const journal of ["WAL", "DELETE"] as const) {
     const backup = new Database(result.backupPath!, { readonly: true, create: false });
     try {
       expect(backup.query("SELECT * FROM notes WHERE id='note-a'").get()).toEqual(before);
-      expect(backup.query("SELECT content FROM lists").get()).toEqual({ content: '["note-a","note-b"]' });
+      expect(backup.query("SELECT COUNT(*) AS count FROM notes").get()).toEqual({ count: 1 });
+      expect(backup.query("SELECT * FROM notes WHERE id='note-b'").get()).toBeNull();
+      expect(backup.query("SELECT name FROM sqlite_schema WHERE name='lists'").get()).toBeNull();
+      expect(backup.query("SELECT kind,note_id,note_version FROM mcp_backup_metadata").get())
+        .toEqual({ kind: "upnote-note", note_id: "note-a", note_version: beforeVersion });
       expect(backup.query("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
     } finally { backup.close(); }
   });
 }
+
+test("note backup size is independent of unrelated notes and tables", async () => {
+  const f = fixture();
+  f.db.query("UPDATE notes SET html=? WHERE id='note-b'").run("UNRELATED_PRIVATE_CONTENT".repeat(160_000));
+  f.db.exec("CREATE TABLE unrelated_private_data (payload BLOB); INSERT INTO unrelated_private_data VALUES (zeroblob(3000000))");
+  const before = f.row();
+  const result = await f.repository.updateNote({ ...f.params(), content: "Small edit" });
+  expect(statSync(result.backupPath!).size).toBeLessThan(64 * 1024);
+  const backup = new Database(result.backupPath!, { readonly: true, create: false });
+  try {
+    expect(backup.query("SELECT * FROM notes").all()).toEqual([before]);
+    expect(backup.query("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all())
+      .toEqual([{ name: "mcp_backup_metadata" }, { name: "notes" }]);
+  } finally { backup.close(); }
+});
 
 test("dry run previews the edit while UpNote runs without writing or backing up", async () => {
   const f = fixture({ running: () => true });
