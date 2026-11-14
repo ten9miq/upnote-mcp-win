@@ -187,6 +187,8 @@ Tests use temporary DBs; the full suite isolates test files into separate OS pro
 
 See [release preparation](docs/releasing.md) for package/bundle contents and manual publication. Opening an MCPB bundle in Claude Desktop is a separate integration check; a local bundle build alone does not establish it.
 
+On 2026-11-15 JST, the reconnected chat MCP edited a dedicated real note 12 times: backups reached ten at edit 10, then the oldest file was automatically removed on each of edits 11 and 12. The newest pre-edit archive was retained, all ten final archives passed integrity checks (120 KiB total), and every edit received editor/sync acknowledgement. The 512 MiB capacity ceiling and other-device receipt were not exercised by this small-note run. See [live retention results](docs/note-backups.md#live-retention-check-2026-11-15-jst).
+
 ## License and attribution
 
 MIT. The original bellx2 copyright notice is retained in [LICENSE](LICENSE). This fork builds on bellx2/upnote-mcp; bug-breeder/upnote-mcp informed the guarded direct-edit design. Neither upstream project maintains or supports this fork. Report fork issues in [this repository](https://github.com/ten9miq/upnote-mcp-win/issues).

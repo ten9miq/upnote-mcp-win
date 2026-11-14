@@ -53,3 +53,24 @@ Before saving, the server obtains a source writer reservation and rechecks the f
 The retention implementation passed **102 tests in 12 files**, plus TypeScript checks. Tests cover WAL and rollback-journal sources, exact pre-edit rows, exclusion of unrelated notes/tables, bounded archive size despite large unrelated data, binary/additive/quoted columns, independent revisions, stale writes, backup failures, rollback, and native/partial-edit flows. Retention tests cover generation and byte limits, latest/pending protection, format migration, same-ID profiles, invalid settings, failed backup/deletion, unsafe paths/unrelated contents, multi-process races and lock timeout. The MCP integration test verifies that environment settings and protected-limit warnings appear in actual tool results. All tests use temporary data; production backups are not pruned by the test suite.
 
 A read-only export of the dedicated long test note produced a **921600-byte** archive, compared with the **467320832-byte** library database: **99.80% smaller** for that note. The archive contained one exact pre-edit row and passed `integrity_check`. This check did not edit an UpNote note or test cloud synchronization; archive size varies with the target note's contents.
+
+### Live retention check (2026-11-15 JST)
+
+After reconnecting the chat's MCP server, a new dedicated test note was created through `create_note` and edited **12 times through that same chat's `patch_note_in_app` tool** while the signed-in Windows UpNote app stayed running. This used the real library and configured backup directory, not the temporary-DB integration client. Effective settings were 10 generations per note/profile and 536870912 bytes (512 MiB). A read-only preflight found no existing managed archives and sufficient capacity, so generation cleanup would not affect another note's backups.
+
+Each edit replaced one unique counter (`RETENTION_REV_00` through `RETENTION_REV_12`). Before every write, the current version and complete pre-edit row were recorded; after every write, read-only inspection checked archive contents, actual file presence and SQLite integrity.
+
+| Completed edits | Retained archives | Automatic deletion observed |
+| --- | --- | --- |
+| 1–9 | 1–9 | None |
+| 10 | 10 | None; pre-edit revisions 00–09 retained |
+| 11 | 10 | Oldest revision 00 archive removed from disk; revisions 01–10 retained |
+| 12 | 10 | Revision 01 archive also removed from disk; revisions 02–11 retained |
+
+All 12 calls returned `state: synced`, `uiUpdated: true`, `cloudSync: app_acknowledged` and `htmlPreserved: true`. The same note ID and creation time were preserved. Every new archive exactly matched the entire row recorded immediately before its edit. All ten final archives passed `integrity_check`, and both pruned files were confirmed absent, independently of the tool's deletion counts.
+
+The latest retained archive contains revision 11, the state immediately **before** edit 12; the live note contains revision 12. Backups represent pre-edit recovery points, not a second copy of the post-edit note. Final managed archive size was **122880 bytes (120 KiB)**: ten 12288-byte files. `backupRetention` reported one deletion on each of edits 11 and 12, with no warnings or limit excess.
+
+The dedicated test note and its ten backups were left in place. Ordinary notes were not edited. No independent MCP client performed the mutations, no app-note rows/sync flags were written directly, and no script manually deleted the expired files. The raw audit, local paths and note identifiers remain outside the public repository.
+
+This live check establishes generation pruning and preservation of the newest pre-edit archive in the configured chat connection. It did **not** reach the 512 MiB byte ceiling, simulate deletion failure/concurrent writers, or independently verify receipt on another device. Those retention edge cases are covered by temporary-data tests; app sync acknowledgement alone is not other-device verification.
