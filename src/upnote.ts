@@ -7,6 +7,7 @@ import { isUpNoteRunning, noteVersion, prepareNoteUpdate, type UpdateNoteParams 
 import { stageNoteClipboard } from "./clipboard";
 import { NativeConnection, nativeExpression, type NativeChannel } from "./native-bridge";
 import { assertNativeSchema, assertNativeNoteData, type NativeColumn } from "./compatibility";
+import { connectWithRecovery, launchInstalledUpNote } from "./connection";
 
 export type { UpdateNoteParams } from "./editing";
 
@@ -17,6 +18,9 @@ type RepositoryOptions = {
   stageClipboard?: (payloadPath: string) => Promise<void>;
   nativeEndpoint?: string;
   connectNative?: (endpoint: string) => Promise<NativeChannel>;
+  autoStart?: boolean;
+  startNativeApp?: (endpoint: string) => Promise<void>;
+  lazyOpen?: boolean;
 };
 
 export type NativeEditResult = {
@@ -282,18 +286,24 @@ function createMissingDbMessage(dbPath: string): string {
 
 export class UpNoteRepository {
   private readonly dbPath: string;
-  private readonly db: Database;
+  private dbCache: Database | null = null;
+  private closed = false;
   private readonly appEdits = new Map<string, AppEditSession>();
 
   constructor(dbPath = resolveUpnoteDbPath(), private readonly options: RepositoryOptions = {}) {
     this.dbPath = dbPath;
+    if (!options.lazyOpen) void this.db;
+  }
 
+  private get db(): Database {
+    if (this.closed) throw new Error("The UpNote repository is closed.");
+    if (this.dbCache) return this.dbCache;
     if (!existsSync(this.dbPath)) {
       throw new Error(createMissingDbMessage(this.dbPath));
     }
 
     try {
-      this.db = new Database(this.dbPath, {
+      this.dbCache = new Database(this.dbPath, {
         readonly: true,
         create: false,
         strict: true,
@@ -301,6 +311,7 @@ export class UpNoteRepository {
     } catch (error) {
       throw new Error(createOpenDbMessage(this.dbPath, error));
     }
+    return this.dbCache;
   }
 
   getResolvedDbPath(): string {
@@ -308,7 +319,9 @@ export class UpNoteRepository {
   }
 
   close(): void {
-    this.db.close();
+    this.dbCache?.close();
+    this.dbCache = null;
+    this.closed = true;
   }
 
   /** Consistent SQLite snapshot, including committed WAL pages; never copy a live DB file. */
@@ -340,7 +353,13 @@ export class UpNoteRepository {
   private async nativeConnection(): Promise<NativeChannel> {
     const endpoint = this.options.nativeEndpoint ?? process.env.UPNOTE_CDP_URL;
     if (!endpoint) throw new Error("UPNOTE_CDP_URL is not configured. Exit UpNote normally and start it with scripts/start-upnote-bridge.ps1, then configure the MCP environment. The server never force-restarts UpNote.");
-    return (this.options.connectNative ?? NativeConnection.connect)(endpoint);
+    return connectWithRecovery({
+      endpoint, key: `${endpoint}|${this.dbPath}`,
+      autoStart: this.options.autoStart ?? process.env.UPNOTE_AUTO_START === "1",
+      connect: this.options.connectNative ?? NativeConnection.connect,
+      ready: channel => channel.evaluate(nativeExpression({ action: "status", databasePath: this.dbPath })),
+      launch: this.options.startNativeApp ?? launchInstalledUpNote,
+    });
   }
 
   private nativeSchemaCompatibility(db = this.db) {

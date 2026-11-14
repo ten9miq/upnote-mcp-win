@@ -15,7 +15,8 @@ import {
 } from "./upnote";
 import { openUpNoteUrl } from "./url";
 
-const repository = new UpNoteRepository();
+// Advertise MCP tools even if the database is temporarily unavailable at startup.
+const repository = new UpNoteRepository(undefined, { lazyOpen: true });
 function formatSearchResults(query: string, notes: ReturnType<UpNoteRepository["searchNotes"]>): string {
   if (notes.length === 0) {
     return `No notes matched query="${query}".`;
@@ -453,6 +454,19 @@ async function main(): Promise<void> {
   );
 
   server.registerTool(
+    "ensure_upnote_connection",
+    {
+      description: "Prepare and verify the Codex-to-UpNote connection. With UPNOTE_AUTO_START=1, starts a closed UpNote in the background and waits for its CDP renderer/data to become ready. Checks profile, API and DB compatibility. Never force-restarts a running app, unlocks it, or retries note mutations. Use this before a workflow or after an app restart.",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {},
+    },
+    async () => {
+      const result = await repository.getNativeBridgeStatus();
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: { ...result, dbPath: repository.getResolvedDbPath() } };
+    },
+  );
+
+  server.registerTool(
     "get_upnote_bridge_status",
     {
       description: "Check the opt-in local UpNote CDP bridge without Computer Use. Requires UPNOTE_CDP_URL. With UPNOTE_AUTO_START=1, prepares a closed app automatically. Checks DB columns/affinities/unique IDs and internal methods/state types, plus profile/lock state. App version is informational. Optional id validates note data and reports editor/sync metadata. Never force-restarts or unlocks UpNote.",
@@ -639,7 +653,12 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-
+  if (process.env.UPNOTE_AUTO_START === "1") {
+    void repository.getNativeBridgeStatus().catch(error => {
+      // Startup failures must not kill stdio or remove read-only/search tools.
+      console.error(`UpNote background preparation: ${String(error)}`);
+    });
+  }
 }
 
 main().catch((error) => {

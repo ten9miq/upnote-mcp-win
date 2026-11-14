@@ -10,7 +10,7 @@ import { NativeConnectionUnavailable, type NativeChannel } from "./native-bridge
 const cleanup: Array<() => void> = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 
-function fixture(options: { running?: () => boolean; journal?: "WAL" | "DELETE"; observeLiveMs?: number; stageClipboard?: (path: string) => Promise<void>; connectNative?: () => Promise<NativeChannel>; } = {}) {
+function fixture(options: { running?: () => boolean; journal?: "WAL" | "DELETE"; observeLiveMs?: number; stageClipboard?: (path: string) => Promise<void>; connectNative?: () => Promise<NativeChannel>; autoStart?: boolean; startNativeApp?: () => Promise<void> } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "upnote-edit-test-"));
   cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, "upnote.sqlite3");
@@ -38,6 +38,7 @@ function fixture(options: { running?: () => boolean; journal?: "WAL" | "DELETE";
   const repository = new UpNoteRepository(path, {
     backupsDir, isUpNoteRunning: options.running ?? (() => false), observeLiveMs: options.observeLiveMs ?? 0,
     stageClipboard: options.stageClipboard ?? (async () => {}),
+    autoStart: options.autoStart ?? false, startNativeApp: options.startNativeApp,
     ...(options.connectNative ? { nativeEndpoint: "http://127.0.0.1:19330", connectNative: options.connectNative } : {}),
   });
   cleanup.push(() => repository.close());
@@ -426,4 +427,14 @@ test("native malformed row data and schema changes during preflight cannot reach
   expect(calls).toBe(0);
   expect(existsSync(badValue.backupsDir)).toBe(false);
   expect(existsSync(midFlight.backupsDir)).toBe(false);
+});
+
+test("automatic connection recovery never retries a mutation whose response was lost", async () => {
+  let launches = 0; let mutations = 0;
+  const f = fixture({ autoStart: true, startNativeApp: async () => { launches++; }, connectNative: async () => nativeChannel(() => {
+    mutations++; throw new NativeConnectionUnavailable("disconnected during app edit");
+  }) });
+  const result = await f.repository.updateNoteInApp({ ...f.params(), content: "No repeated edit" }, 0);
+  expect(result.applied).toBeNull(); expect(result.state).toBe("unavailable");
+  expect(mutations).toBe(1); expect(launches).toBe(0);
 });

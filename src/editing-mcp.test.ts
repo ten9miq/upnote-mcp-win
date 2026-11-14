@@ -27,6 +27,7 @@ test("MCP get_note version, update preview, commit, backup and stale-write error
     const toolNames = (await client.listTools()).tools.map(item => item.name);
     expect(toolNames).toContain("update_note_in_app");
     expect(toolNames).toContain("get_upnote_bridge_status");
+    expect(toolNames).toContain("ensure_upnote_connection");
     const read = await client.callTool({ name: "get_note", arguments: { id: "test-note" } });
     const note = (read.structuredContent as { note: { version: string } }).note;
     expect(note.version).toMatch(/^[a-f\d]{64}$/);
@@ -49,4 +50,24 @@ test("MCP get_note version, update preview, commit, backup and stale-write error
     db.close();
     rmSync(directory, { recursive: true, force: true });
   }
+}, 15_000);
+
+test("MCP stays available when its database is temporarily missing, then opens it on demand", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "upnote-lazy-mcp-"));
+  const path = join(directory, "later.sqlite3");
+  const client = new Client({ name: "lazy-db-test", version: "1.0.0" });
+  const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+  const transport = new StdioClientTransport({ command: process.execPath, args: ["run", resolve(import.meta.dir, "index.ts")], env: { ...env, UPNOTE_DB: path, UPNOTE_AUTO_START: "0" }, stderr: "pipe" });
+  try {
+    await client.connect(transport);
+    expect((await client.listTools()).tools.some(item => item.name === "ensure_upnote_connection")).toBe(true);
+    const missing = await client.callTool({ name: "get_note", arguments: { id: "id" } });
+    expect(missing.isError).toBe(true);
+    const db = new Database(path);
+    try { db.exec("CREATE TABLE notes(id TEXT PRIMARY KEY,title TEXT,html TEXT,text TEXT,summary TEXT,updatedAt DOUBLE,createdAt DOUBLE,deleted INTEGER,trashed INTEGER); INSERT INTO notes VALUES('id','Title','<h2>Title</h2>','Title','Title',1,1,0,0)"); }
+    finally { db.close(); }
+    const read = await client.callTool({ name: "get_note", arguments: { id: "id" } });
+    expect(read.isError).not.toBe(true);
+    expect((read.structuredContent as { note: { id: string } }).note.id).toBe("id");
+  } finally { await client.close(); rmSync(directory, { recursive: true, force: true }); }
 }, 15_000);
