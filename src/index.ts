@@ -453,6 +453,49 @@ async function main(): Promise<void> {
   );
 
   server.registerTool(
+    "prepare_app_note_edit",
+    {
+      description: [
+        "Prepare a backed-up app-native edit without writing the UpNote database. Windows only; UpNote must be running and the note synced.",
+        "Requires a computer-use client to apply the edit to UpNote's editor. Read get_note first and pass its version.",
+        "Creates a verified full DB backup and stages rich HTML plus text on the Windows clipboard. Refuses images/attachments.",
+        "Follow the returned instructions, verify the target note, and paste into its editor; then call complete_app_note_edit with the returned ticket.",
+        "Keep the MCP server alive through completion. Tickets expire after ten minutes. Do not use direct SQLite writes for this workflow.",
+      ].join(" "),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      inputSchema: {
+        id: z.string().min(1),
+        expectedVersion: z.string().regex(/^[a-f\d]{64}$/),
+        title: z.string().min(1).optional(),
+        content: z.string().optional().describe("Body without title"),
+        contentFormat: z.enum(["markdown", "text"]).optional(),
+        mode: z.enum(["replace", "append"]).optional(),
+      },
+    },
+    async (params) => {
+      const result = await repository.prepareAppNoteEdit(params);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: { ...result, dbPath: repository.getResolvedDbPath() } };
+    },
+  );
+
+  server.registerTool(
+    "complete_app_note_edit",
+    {
+      description: "Read-only verification after the computer-use client pastes a prepared edit into UpNote. Waits for matching content under the original ID and a fresh app sync acknowledgement. Only state=synced acknowledges sync; awaiting states are incomplete. Never changes synced/syncedAt or retries input. Other-device receipt is not independently verified.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: { ticket: z.string().uuid(), waitMs: z.number().int().min(0).max(30_000).optional() },
+    },
+    async ({ ticket, waitMs }) => {
+      const result = await repository.completeAppNoteEdit(ticket, waitMs);
+      return {
+        isError: result.state === "conflict" || result.state === "unavailable",
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: { ...result, dbPath: repository.getResolvedDbPath() },
+      };
+    },
+  );
+
+  server.registerTool(
     "create_note",
     {
       description: [

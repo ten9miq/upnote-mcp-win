@@ -9,7 +9,7 @@ import { UpNoteRepository } from "./upnote";
 const cleanup: Array<() => void> = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 
-function fixture(options: { running?: () => boolean; journal?: "WAL" | "DELETE"; observeLiveMs?: number; } = {}) {
+function fixture(options: { running?: () => boolean; journal?: "WAL" | "DELETE"; observeLiveMs?: number; stageClipboard?: (path: string) => Promise<void>; } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "upnote-edit-test-"));
   cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, "upnote.sqlite3");
@@ -35,6 +35,7 @@ function fixture(options: { running?: () => boolean; journal?: "WAL" | "DELETE";
   `);
   const repository = new UpNoteRepository(path, {
     backupsDir, isUpNoteRunning: options.running ?? (() => false), observeLiveMs: options.observeLiveMs ?? 0,
+    stageClipboard: options.stageClipboard ?? (async () => {}),
   });
   cleanup.push(() => repository.close());
   const row = () => db.query<Record<string, unknown>, []>("SELECT * FROM notes WHERE id='note-a'").get()!;
@@ -245,4 +246,70 @@ test("body clearing is explicit and Markdown cannot import images, raw HTML or s
   expect(() => renderBody("[bad](javascript:alert(1))", "markdown")).toThrow("protocol");
   expect(renderBody('<script>alert(1)</script>', "markdown")).not.toContain("<script>");
   expect(htmlToPlainText('<p>&copy; A &amp; B</p><p>line<br>two</p>')).toBe("© A & B\nline\ntwo");
+});
+
+test("app-native preparation snapshots and stages HTML without updating UpNote rows", async () => {
+  let staged: Record<string, string> | undefined;
+  const f = fixture({ running: () => true, stageClipboard: async (path) => { staged = JSON.parse(readFileSync(path, "utf8")); } });
+  const before = f.row();
+  const plan = await f.repository.prepareAppNoteEdit({ ...f.params(), content: "**Native** & test" });
+  expect(f.row()).toEqual(before);
+  expect(staged?.kind).toBe("upnote-app-edit-v1");
+  expect(staged?.html).toContain("<strong>Native</strong>");
+  expect(plan.proposed.text).toContain("Native & test");
+  expect(plan.clipboardStaged).toBe(true);
+  const backup = new Database(plan.backupPath, { readonly: true, create: false });
+  try { expect(backup.query("SELECT * FROM notes WHERE id='note-a'").get()).toEqual(before); }
+  finally { backup.close(); }
+  expect((await f.repository.completeAppNoteEdit(plan.ticket, 0)).state).toBe("awaiting_edit");
+});
+
+test("app-native completion requires matching content and a fresh app sync timestamp", async () => {
+  const f = fixture({ running: () => true });
+  f.db.exec("ALTER TABLE notes ADD COLUMN syncedAt DOUBLE DEFAULT 1");
+  const plan = await f.repository.prepareAppNoteEdit({ ...f.params(), content: "Native sync" });
+  f.db.query("UPDATE notes SET html=?, text=?, title=?, synced=0, updatedAt=? WHERE id='note-a'")
+    .run(plan.proposed.html, plan.proposed.text, plan.proposed.title, Date.now());
+  const local = await f.repository.completeAppNoteEdit(plan.ticket, 0);
+  expect(local.state).toBe("awaiting_sync");
+  expect(local.applied).toBe(true);
+  expect(local.cloudSync).toBe("unverified");
+  f.db.exec("UPDATE notes SET synced=1 WHERE id='note-a'");
+  expect((await f.repository.completeAppNoteEdit(plan.ticket, 0)).state).toBe("awaiting_sync");
+  f.db.query("UPDATE notes SET syncedAt=? WHERE id='note-a'").run(Date.now());
+  const complete = await f.repository.completeAppNoteEdit(plan.ticket, 0);
+  expect(complete.state).toBe("synced");
+  expect(complete.cloudSync).toBe("app_acknowledged");
+  expect(complete.otherDeviceVerified).toBe(false);
+});
+
+test("app-native completion detects wrong content and deleted targets without retrying", async () => {
+  const f = fixture({ running: () => true });
+  const plan = await f.repository.prepareAppNoteEdit({ ...f.params(), content: "Expected" });
+  f.db.exec("UPDATE notes SET text='Unexpected' WHERE id='note-a'");
+  expect((await f.repository.completeAppNoteEdit(plan.ticket, 0)).state).toBe("conflict");
+  expect(f.row().text).toBe("Unexpected");
+  f.db.exec("UPDATE notes SET trashed=1 WHERE id='note-a'");
+  expect((await f.repository.completeAppNoteEdit(plan.ticket, 0)).state).toBe("conflict");
+  await expect(f.repository.completeAppNoteEdit("unknown", 0)).rejects.toThrow("Unknown or expired");
+});
+
+test("app-native preparation refuses stale, unsynced and attachment notes", async () => {
+  const f = fixture({ running: () => true });
+  const stale = f.params();
+  f.db.exec("UPDATE notes SET pinned=0 WHERE id='note-a'");
+  await expect(f.repository.prepareAppNoteEdit({ ...stale, content: "No" })).rejects.toThrow("changed");
+  f.db.exec("UPDATE notes SET synced=0 WHERE id='note-a'");
+  await expect(f.repository.prepareAppNoteEdit({ ...f.params(), content: "No" })).rejects.toThrow("synced");
+  f.db.exec("UPDATE notes SET synced=1,filesCount=1 WHERE id='note-a'");
+  await expect(f.repository.prepareAppNoteEdit({ ...f.params(), content: "No", mode: "append" })).rejects.toThrow("images/attachments");
+  expect(existsSync(f.backupsDir)).toBe(false);
+});
+
+test("clipboard staging failure leaves the library unchanged and retains its backup", async () => {
+  const f = fixture({ running: () => true, stageClipboard: async () => { throw new Error("clipboard busy"); } });
+  const before = f.row();
+  await expect(f.repository.prepareAppNoteEdit({ ...f.params(), content: "No" })).rejects.toThrow("clipboard busy");
+  expect(f.row()).toEqual(before);
+  expect(readdirSync(f.backupsDir)).toHaveLength(1);
 });

@@ -42,7 +42,9 @@
     { "name": "list_tags", "description": "List available tags" },
     { "name": "search_by_tag", "description": "List notes for a specific tag" },
     { "name": "create_note", "description": "Create a new note through UpNote's official URL scheme" },
-    { "name": "update_note", "description": "Edit or append in place with a verified database backup and version check" }
+    { "name": "update_note", "description": "Edit or append in place with a verified database backup and version check" },
+    { "name": "prepare_app_note_edit", "description": "Windows only: back up and stage an app-editor edit for a computer-use client" },
+    { "name": "complete_app_note_edit", "description": "Verify an app-editor edit and fresh app sync acknowledgement" }
   ],
   "keywords": ["upnote", "notes", "mcp", "productivity"],
   "license": "MIT",

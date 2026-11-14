@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { isUpNoteRunning, noteVersion, prepareNoteUpdate, type UpdateNoteParams } from "./editing";
+import { stageNoteClipboard } from "./clipboard";
 
 export type { UpdateNoteParams } from "./editing";
 
@@ -11,6 +12,28 @@ type RepositoryOptions = {
   isUpNoteRunning?: () => boolean;
   backupsDir?: string;
   observeLiveMs?: number;
+  stageClipboard?: (payloadPath: string) => Promise<void>;
+};
+
+type AppEditSession = {
+  id: string;
+  before: Record<string, unknown>;
+  desiredTitle: string;
+  desiredText: string;
+  preparedAt: number;
+  backupPath: string;
+};
+
+export type AppEditVerification = {
+  id: string;
+  state: "awaiting_edit" | "awaiting_sync" | "synced" | "conflict" | "unavailable";
+  applied: boolean;
+  cloudSync: "app_acknowledged" | "unverified";
+  otherDeviceVerified: false;
+  backupPath: string;
+  syncedAt: string | null;
+  note: NoteDetail | null;
+  message: string;
 };
 
 export type UpdateNoteResult = {
@@ -242,6 +265,7 @@ function createMissingDbMessage(dbPath: string): string {
 export class UpNoteRepository {
   private readonly dbPath: string;
   private readonly db: Database;
+  private readonly appEdits = new Map<string, AppEditSession>();
 
   constructor(dbPath = resolveUpnoteDbPath(), private readonly options: RepositoryOptions = {}) {
     this.dbPath = dbPath;
@@ -293,6 +317,96 @@ export class UpNoteRepository {
     const fd = openSync(backupPath, "r+");
     try { fsyncSync(fd); } finally { closeSync(fd); }
     return backupPath;
+  }
+
+  async prepareAppNoteEdit(params: UpdateNoteParams) {
+    if (!params.id.trim() || !/^[a-f\d]{64}$/.test(params.expectedVersion)) throw new Error("Provide id and expectedVersion from get_note.");
+    if (params.title === undefined && params.content === undefined) throw new Error("Provide title or content.");
+    if (params.title !== undefined && (!params.title.trim() || /[\r\n]/.test(params.title))) throw new Error("title must be a non-empty single line.");
+    if (params.mode === "append" && !params.content?.trim()) throw new Error("Append requires non-empty content.");
+    const running = this.options.isUpNoteRunning ?? isUpNoteRunning;
+    if (!running()) throw new Error("Start UpNote before preparing an app-editor edit.");
+    const before = this.db.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id=? AND deleted=0 AND trashed=0").get(params.id);
+    if (!before || noteVersion(before) !== params.expectedVersion) throw new Error("The note changed or is unavailable. Read get_note again.");
+    if (before.synced !== 1) throw new Error("Wait until the note has synced before preparing an app-editor edit.");
+    // Full-note paste cannot safely round-trip external attachment objects.
+    if (Number(before.filesCount ?? 0) > 0 || /<img\b|<attachment\b/i.test(String(before.html ?? "")) || (before.fileIds && String(before.fileIds) !== "[]")) {
+      throw new Error("App-editor full-note paste currently refuses notes with images/attachments.");
+    }
+    const patch = prepareNoteUpdate(before, params);
+    if (!Object.keys(patch).length) throw new Error("Nothing to change.");
+    const desiredTitle = String(patch.title ?? before.title ?? "");
+    const desiredText = String(patch.text ?? before.text ?? "");
+    const html = String(patch.html ?? before.html ?? "");
+    // Snapshot under a writer reservation, but do not update any UpNote rows.
+    const writer = new Database(this.dbPath, { readwrite: true, create: false, strict: true });
+    let backupPath: string;
+    try {
+      writer.exec("PRAGMA busy_timeout=2000; BEGIN IMMEDIATE");
+      const current = writer.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id=?").get(params.id);
+      if (!current || noteVersion(current) !== params.expectedVersion) throw new Error("The note changed before backup. Read get_note again.");
+      backupPath = this.backupBeforeEdit();
+    } finally {
+      if (writer.inTransaction) writer.exec("ROLLBACK");
+      writer.close();
+    }
+    const ticket = randomUUID();
+    const payloadPath = join(dirname(backupPath), "app-edit-clipboard.json");
+    writeFileSync(payloadPath, JSON.stringify({ kind: "upnote-app-edit-v1", id: params.id, title: desiredTitle, html, text: desiredText }, null, 2));
+    await (this.options.stageClipboard ?? stageNoteClipboard)(payloadPath);
+    // Fail rather than encouraging a stale clipboard paste if staging took time.
+    const current = this.db.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id=?").get(params.id);
+    if (!current || noteVersion(current) !== params.expectedVersion) throw new Error(`The note changed during preparation. Do not paste. Backup: ${backupPath}`);
+    for (const [key, value] of this.appEdits) if (Date.now() - value.preparedAt > 10 * 60_000) this.appEdits.delete(key);
+    this.appEdits.set(ticket, { id: params.id, before, desiredTitle, desiredText, backupPath, preparedAt: Date.now() });
+    return {
+      ticket, id: params.id, currentTitle: String(before.title ?? ""), title: desiredTitle, url: noteUrl(params.id), backupPath, clipboardStaged: true,
+      proposed: { title: desiredTitle, text: desiredText, html },
+      instructions: [
+        "Use the computer-use client to open the note URL and verify the target note ID and currentTitle (the proposed title may differ). Do not paste into any other app or field.",
+        "Ensure nobody is editing this note in another window. Click inside its editor, inspect focus, then select all note content and paste with Ctrl+V (rich HTML is staged).",
+        "Inspect the editor to verify the proposed contents are visible. The note title is included in the staged content; do not create a replacement note.",
+        "Call complete_app_note_edit with this ticket. Only state=synced acknowledges app-reported server sync. Never set synced/syncedAt manually or retry the paste automatically.",
+      ],
+      warnings: ["The Windows clipboard has been replaced. Concurrent unsaved edits cannot be guarded by a database version token. Images/attachments are unsupported in this full-note-paste workflow."],
+    };
+  }
+
+  async completeAppNoteEdit(ticket: string, waitMs = 15_000): Promise<AppEditVerification> {
+    const session = this.appEdits.get(ticket);
+    if (!session || Date.now() - session.preparedAt > 10 * 60_000) throw new Error("Unknown or expired app-edit ticket. Do not paste again automatically.");
+    const normalize = (text: unknown) => String(text ?? "").replace(/\s+/gu, " ").trim();
+    const result: AppEditVerification = {
+      id: session.id, state: "awaiting_edit", applied: false, cloudSync: "unverified", otherDeviceVerified: false,
+      backupPath: session.backupPath, syncedAt: null, note: null, message: "The staged edit has not been saved by UpNote yet.",
+    };
+    const deadline = Date.now() + Math.min(30_000, Math.max(0, waitMs));
+    do {
+      try {
+        const row = this.db.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id=?").get(session.id);
+        if (!row || row.deleted !== 0 || row.trashed !== 0 || row.createdAt !== session.before.createdAt) {
+          result.state = "conflict"; result.message = "The target note is unavailable or its identity changed. Inspect it; do not retry the paste."; return result;
+        }
+        result.note = this.getNote(session.id);
+        const matches = row.title === session.desiredTitle && normalize(row.text) === normalize(session.desiredText);
+        if (matches) {
+          result.applied = true;
+          result.syncedAt = formatTimestamp(Number(row.syncedAt) || null);
+          if (row.synced === 1 && Number(row.syncedAt) >= Number(row.updatedAt) && Number(row.syncedAt) >= session.preparedAt) {
+            result.state = "synced"; result.cloudSync = "app_acknowledged";
+            result.message = "UpNote saved the expected content under the same ID and recorded a fresh sync acknowledgement. Other-device receipt was not independently checked.";
+            return result;
+          }
+          result.state = "awaiting_sync"; result.message = "The expected edit is saved locally, but UpNote has not acknowledged syncing it yet.";
+        } else if (noteVersion(row) !== noteVersion(session.before)) {
+          result.state = "conflict"; result.message = "The saved content differs from the staged edit. Inspect the editor and backup; do not paste again automatically."; return result;
+        }
+      } catch (error) {
+        result.state = "unavailable"; result.message = `Cannot verify the saved edit: ${String(error)}. Do not paste again automatically.`; return result;
+      }
+      if (Date.now() >= deadline) return result;
+      await Bun.sleep(250);
+    } while (true);
   }
 
   async updateNote(params: UpdateNoteParams): Promise<UpdateNoteResult> {
