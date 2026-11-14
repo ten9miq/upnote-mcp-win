@@ -4,8 +4,8 @@
   "name": "upnote-mcp",
   "display_name": "UpNote MCP",
   "version": "0.2.7",
-  "description": "Search, read, and create UpNote notes from Claude Desktop.",
-  "long_description": "Unofficial MCP server for UpNote on macOS. Reads your local UpNote SQLite database (read-only) and exposes search, tag filtering, note retrieval, and safe note creation through UpNote's official URL scheme. Requires the UpNote desktop app.",
+  "description": "Search, read, create, and edit UpNote notes with automatic backups.",
+  "long_description": "Unofficial MCP server for UpNote. Reads use a read-only SQLite connection; creation uses UpNote's URL scheme. In-place edits require a database backup and version check. Quit UpNote for normal editing; live editing is experimental and cannot guarantee UI or cloud sync. Requires the UpNote desktop app.",
   "author": {
     "name": "bellx2",
     "url": "https://github.com/bellx2"
@@ -41,7 +41,8 @@
     { "name": "list_notebooks", "description": "List notebooks with note counts" },
     { "name": "list_tags", "description": "List available tags" },
     { "name": "search_by_tag", "description": "List notes for a specific tag" },
-    { "name": "create_note", "description": "Create a new note through UpNote's official URL scheme" }
+    { "name": "create_note", "description": "Create a new note through UpNote's official URL scheme" },
+    { "name": "update_note", "description": "Edit or append in place with a verified database backup and version check" }
   ],
   "keywords": ["upnote", "notes", "mcp", "productivity"],
   "license": "MIT",

@@ -16,7 +16,6 @@ import {
 import { openUpNoteUrl } from "./url";
 
 const repository = new UpNoteRepository();
-
 function formatSearchResults(query: string, notes: ReturnType<UpNoteRepository["searchNotes"]>): string {
   if (notes.length === 0) {
     return `No notes matched query="${query}".`;
@@ -73,6 +72,7 @@ function formatNoteDetail(note: ReturnType<UpNoteRepository["getNote"]>): string
     `url: ${note.url}`,
     `updatedAt: ${note.updatedAt ?? "unknown"}`,
     `createdAt: ${note.createdAt ?? "unknown"}`,
+    `version: ${note.version}`,
     "",
     note.content || "(no content)",
   ].join("\n");
@@ -418,6 +418,41 @@ async function main(): Promise<void> {
   );
 
   server.registerTool(
+    "update_note",
+    {
+      description: [
+        "Edit an existing note without changing its ID, after a verified full database backup.",
+        "First call get_note and pass its version as expectedVersion. Use dryRun=true to preview.",
+        "content replaces the body by default; mode=append preserves existing rich text and attachments.",
+        "Quit UpNote for normal edits. allowWhileRunning=true enables experimental live writes only for a synced note.",
+        "Live writes may be overwritten by UpNote's UI cache; database verification does not prove cloud sync.",
+        "For app-visible edits and sync acknowledgement while running, prefer prepare_app_note_edit, computer-use paste, and complete_app_note_edit.",
+        "After a conflict or a committed-but-unverified result, inspect the note and backup; never retry blindly.",
+      ].join(" "),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      inputSchema: {
+        id: z.string().min(1),
+        expectedVersion: z.string().regex(/^[a-f\d]{64}$/).describe("version from the latest get_note result"),
+        title: z.string().min(1).optional().describe("Optional new title"),
+        content: z.string().optional().describe("Body without the title; empty string clears the body in replace mode"),
+        contentFormat: z.enum(["markdown", "text"]).optional(),
+        mode: z.enum(["replace", "append"]).optional(),
+        dryRun: z.boolean().optional().describe("Preview changed fields without writing or creating a backup"),
+        allowWhileRunning: z.boolean().optional().describe("Explicitly permit experimental live edits; default false"),
+      },
+    },
+    async (params) => {
+      const result = await repository.updateNote(params);
+      const failed = result.databaseVerification === "conflict" || result.databaseVerification === "unavailable";
+      return {
+        isError: failed,
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: { ...result, dbPath: repository.getResolvedDbPath() },
+      };
+    },
+  );
+
+  server.registerTool(
     "create_note",
     {
       description: [
@@ -520,6 +555,7 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
 }
 
 main().catch((error) => {

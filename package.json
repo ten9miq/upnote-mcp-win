@@ -1,7 +1,7 @@
 {
   "name": "@bellx2/upnote-mcp",
   "version": "0.2.7",
-  "description": "Unofficial read-only MCP server for reading local UpNote data.",
+  "description": "Unofficial MCP server for reading UpNote data and backed-up in-place note editing.",
   "type": "module",
   "module": "src/index.ts",
   "bin": {
@@ -47,6 +47,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "entities": "^9.0.0",
     "zod": "^4.4.3"
   }
 }

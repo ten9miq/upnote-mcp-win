@@ -1,7 +1,31 @@
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
+import { isUpNoteRunning, noteVersion, prepareNoteUpdate, type UpdateNoteParams } from "./editing";
+
+export type { UpdateNoteParams } from "./editing";
+
+type RepositoryOptions = {
+  isUpNoteRunning?: () => boolean;
+  backupsDir?: string;
+  observeLiveMs?: number;
+};
+
+export type UpdateNoteResult = {
+  id: string;
+  dryRun: boolean;
+  committed: boolean;
+  changedFields: string[];
+  backupPath: string | null;
+  appRunning: boolean;
+  databaseVerification: "preview" | "unchanged" | "matches" | "conflict" | "unavailable";
+  cloudSync: "unverified";
+  warnings: string[];
+  note: NoteDetail | null;
+  preview: { title: string; content: string; html: string } | null;
+};
 
 export type DbPathResolutionOptions = {
   env?: Record<string, string | undefined>;
@@ -32,6 +56,8 @@ export type NoteDetail = {
   updatedAt: string | null;
   createdAt: string | null;
   url: string;
+  version: string;
+  sync: { synced: boolean; syncedAt: string | null; revision: number | null };
 };
 
 export type NotebookResult = {
@@ -217,7 +243,7 @@ export class UpNoteRepository {
   private readonly dbPath: string;
   private readonly db: Database;
 
-  constructor(dbPath = resolveUpnoteDbPath()) {
+  constructor(dbPath = resolveUpnoteDbPath(), private readonly options: RepositoryOptions = {}) {
     this.dbPath = dbPath;
 
     if (!existsSync(this.dbPath)) {
@@ -241,6 +267,126 @@ export class UpNoteRepository {
 
   close(): void {
     this.db.close();
+  }
+
+  /** Consistent SQLite snapshot, including committed WAL pages; never copy a live DB file. */
+  private backupBeforeEdit(): string {
+    const root = resolve(this.options.backupsDir ?? process.env.UPNOTE_BACKUPS_DIR ?? join(dirname(this.dbPath), "MCP Backups"));
+    mkdirSync(root, { recursive: true });
+    const directory = mkdtempSync(join(root, `edit-${new Date().toISOString().replace(/[:.]/g, "-")}-`));
+    const backupPath = join(directory, "upnote.sqlite3");
+    const reader = new Database(this.dbPath, { readonly: true, create: false, strict: true });
+    try {
+      reader.query("VACUUM main INTO ?").run(backupPath);
+    } finally {
+      reader.close();
+    }
+    const backup = new Database(backupPath, { readonly: true, create: false });
+    try {
+      const checks = backup.query<Record<string, string>, []>("PRAGMA quick_check").all();
+      if (checks.length !== 1 || Object.values(checks[0]!)[0] !== "ok") {
+        throw new Error(`Backup integrity check failed: ${backupPath}`);
+      }
+    } finally {
+      backup.close();
+    }
+    const fd = openSync(backupPath, "r+");
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+    return backupPath;
+  }
+
+  async updateNote(params: UpdateNoteParams): Promise<UpdateNoteResult> {
+    const id = params.id.trim();
+    if (!id || !/^[a-f\d]{64}$/.test(params.expectedVersion)) {
+      throw new Error("Provide id and expectedVersion from a fresh get_note result.");
+    }
+    if (params.title === undefined && params.content === undefined) throw new Error("Provide title or content to update.");
+    if (params.title !== undefined && (!params.title.trim() || /[\r\n]/.test(params.title))) throw new Error("title must be a non-empty single line.");
+    if (params.mode !== undefined && params.mode !== "replace" && params.mode !== "append") throw new Error("Invalid edit mode.");
+    if (params.contentFormat !== undefined && params.contentFormat !== "markdown" && params.contentFormat !== "text") throw new Error("Invalid content format.");
+    if (params.mode === "append" && !params.content?.trim()) throw new Error("Append requires non-empty content.");
+
+    const detectRunning = this.options.isUpNoteRunning ?? isUpNoteRunning;
+    let appRunning = detectRunning();
+    const warnings = ["Cloud sync and the UpNote UI cache are unverified. Tags, link indexes and attachment metadata are not recalculated."];
+    const assertAppState = (row: Record<string, unknown>) => {
+      // Recheck immediately before mutation; SQLite cannot prevent UpNote starting later.
+      appRunning = detectRunning();
+      if (appRunning && !params.allowWhileRunning) throw new Error("UpNote is running. Quit it, or explicitly use experimental allowWhileRunning=true.");
+      if (appRunning && row.synced !== 1) throw new Error("The note has pending sync changes. Wait for sync and fetch get_note again before a live edit.");
+    };
+    const readRow = (db: Database) => {
+      const row = db.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id = ? AND deleted = 0 AND trashed = 0").get(id);
+      if (!row) throw new Error(`Active note not found: ${id}`);
+      if (noteVersion(row) !== params.expectedVersion) throw new Error("The note changed since get_note. Fetch it again and review the changes; do not retry blindly.");
+      return row;
+    };
+    const initial = readRow(this.db);
+    const patch = prepareNoteUpdate(initial, params);
+    const changedFields = Object.keys(patch);
+    const result: UpdateNoteResult = {
+      id, dryRun: params.dryRun ?? false, committed: false, changedFields, backupPath: null, appRunning,
+      databaseVerification: params.dryRun ? "preview" : "unchanged", cloudSync: "unverified", warnings,
+      note: this.getNote(id),
+      preview: params.dryRun ? {
+        title: String(patch.title ?? initial.title ?? ""),
+        content: String(patch.text ?? initial.text ?? ""),
+        html: String(patch.html ?? initial.html ?? ""),
+      } : null,
+    };
+    if (params.dryRun || !changedFields.length) return result;
+    assertAppState(initial);
+
+    const writer = new Database(this.dbPath, { readwrite: true, create: false, strict: true });
+    try {
+      writer.exec("PRAGMA busy_timeout = 2000");
+      const columns = new Set(writer.query<{ name: string }, []>("PRAGMA table_info(notes)").all().map((column) => column.name));
+      for (const column of ["synced", "revision", "updatedAt", ...changedFields]) {
+        if (!columns.has(column)) throw new Error(`Unsupported UpNote schema: missing notes.${column}`);
+      }
+      writer.exec("BEGIN IMMEDIATE");
+      try {
+        const current = readRow(writer);
+        assertAppState(current);
+        // Holding the writer reservation prevents another SQL writer from changing
+        // the snapshot between the backup and this edit. Readers remain available.
+        result.backupPath = this.backupBeforeEdit();
+        assertAppState(current);
+        const updatedAt = Math.max(Date.now(), Number(current.updatedAt ?? 0) + 1);
+        writer.query(`UPDATE notes SET ${changedFields.map((key) => `"${key}" = ?`).join(", ")}, synced = 0, revision = COALESCE(revision, 0) + 1, updatedAt = ? WHERE id = ? AND deleted = 0 AND trashed = 0`)
+          .run(...Object.values(patch), updatedAt, id);
+        writer.exec("COMMIT");
+        result.committed = true;
+      } catch (error) {
+        if (writer.inTransaction) writer.exec("ROLLBACK");
+        throw new Error(`Edit not committed. ${String(error)}${result.backupPath ? ` Backup: ${result.backupPath}` : ""}`);
+      }
+    } finally {
+      writer.close();
+    }
+
+    result.appRunning = appRunning;
+    if (appRunning) warnings.push("Experimental live edit: UpNote may overwrite this change later from its in-memory cache. A matching DB read does not prove UI reload or cloud sync. Do not automatically retry or restore the database.");
+    const deadline = Date.now() + (appRunning ? this.options.observeLiveMs ?? 2_000 : 0);
+    try {
+      do {
+        const actual = this.db.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id = ?").get(id);
+        if (!actual || actual.deleted !== 0 || actual.trashed !== 0 || changedFields.some((key) => actual[key] !== patch[key])) {
+          result.databaseVerification = "conflict";
+          warnings.push("The database changed after commit. Inspect the backup and current note before taking further action.");
+          break;
+        }
+        result.databaseVerification = "matches";
+        if (Date.now() >= deadline) break;
+        await Bun.sleep(200);
+      } while (true);
+      result.note = this.getNote(id);
+    } catch (error) {
+      if (result.databaseVerification !== "conflict") result.databaseVerification = "unavailable";
+      result.note = null;
+      warnings.push(`Edit committed, but read-back failed: ${String(error)}. Do not retry blindly.`);
+    }
+    return result;
   }
 
   listNotebooks(): NotebookResult[] {
@@ -555,16 +701,9 @@ export class UpNoteRepository {
 
     try {
       const row = this.db
-        .query<NoteDetailRow, [string]>(
+        .query<NoteDetailRow & Record<string, unknown>, [string]>(
           `
-            SELECT
-              id,
-              title,
-              text,
-              html,
-              summary,
-              updatedAt,
-              createdAt
+            SELECT *
             FROM notes
             WHERE id = ?
               AND deleted = 0
@@ -587,6 +726,8 @@ export class UpNoteRepository {
         updatedAt: formatTimestamp(row.updatedAt),
         createdAt: formatTimestamp(row.createdAt),
         url: noteUrl(row.id),
+        version: noteVersion(row),
+        sync: { synced: row.synced === 1, syncedAt: Number(row.syncedAt) > 0 ? formatTimestamp(Number(row.syncedAt)) : null, revision: typeof row.revision === "number" ? row.revision : null },
       };
     } catch (error) {
       throw new Error(`Failed to get UpNote note: ${String(error)}`);
