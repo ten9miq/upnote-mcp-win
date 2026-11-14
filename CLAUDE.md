@@ -120,7 +120,15 @@ For more information, read the Bun API docs in `node_modules/bun-types/docs/**.m
 
 ## Overview
 
-This project is a server that reads the local SQLite database used by the UpNote desktop app and exposes note search and retrieval over MCP (`stdio`). It is **strictly read-only** and must never write to the UpNote database (`Database` is opened with `readonly: true, create: false`). Do not introduce changes that break this constraint.
+This project reads the local SQLite database used by UpNote and exposes MCP tools over `stdio`. Reads use `readonly: true, create: false`. This Windows fork explicitly supports `update_note`: the only direct-write path, using a separate short-lived connection, a verified full database snapshot before each edit, version checking and a transaction. Do not add unguarded writes or weaken backup/version checks. Live editing is an explicit experimental per-call option, never a claim of confirmed UI or cloud sync.
+
+For MCP-only live editing use the opt-in `update_note_in_app` CDP bridge to call UpNote's native `coreStore.updateNotes` action. Preserve the version/profile/lock/unsaved-input/backup guards. Never expose arbitrary JS/SQL as an MCP tool. The app owns persistence, revision and sync flags. The launcher must refuse existing processes and never force-restart the user's app. Authenticated cloud verification is distinct from unsigned-in isolated tests; do not claim it from those tests.
+
+`UPNOTE_AUTO_START=1` opts into background app preparation and bounded connection/readiness recovery. Never retry an edit request after disconnection or unknown results. The default launcher may reuse an already-connected app, but cannot force-restart a running app without CDP. Keep startup single-flight within MCP and mutex-protected across launcher processes. MCP tool advertisement must survive missing DB/startup failures; initialized repository instances can still use eager DB opening by default, while the MCP entry point uses deferred opening.
+
+Gate native editing on required API/state capabilities, SQLite column affinities/unique note identity, and actual note value types. Do not reintroduce an app-version or schema-version allowlist; those numbers are diagnostic only. Recheck the schema on each call and before backup, and recheck app write guards after awaited navigation actions. Future labels passing simulated tests do not prove future app builds' semantics; preserve post-save content/DOM/sync verification and the no-auto-retry policy.
+
+The fallback is `prepare_app_note_edit` plus a computer-use client's verified editor paste, then `complete_app_note_edit`. App-editor clipboard HTML must be explicit UTF-8 CF_HTML bytes, not a .NET ANSI string. Never manually set sync flags or claim independent other-device verification in either workflow.
 
 ## Commands
 
@@ -132,8 +140,8 @@ bun run check        # Run tsc --noEmit; this is the main verification gate
 bun run smoke        # Execute repository methods via scripts/smoke.ts
 ```
 
-- There is no automated `bun test` suite. Validate changes with `bun run check` and `bun run smoke`.
-- `bun run smoke` requires a real UpNote database and currently uses hard-coded Japanese sample queries (`会議`, `名古屋`). The output depends on the user's real notes, so treat it as a manual smoke check rather than a pass/fail test. If you only want one case, trim the `run(...)` calls in [scripts/smoke.ts](scripts/smoke.ts).
+- Run `bun run check` and `bun run test`. The full suite uses separate OS processes per file to avoid observed Bun 1.4.0/Windows shared-VM/native crashes. Do not skip/retry failed tests. Individual files may use `bun test ./src/name.test.ts`. Editing tests use temporary databases and must never mutate the user's real library. MCP integration testing needs process-list and loopback access.
+- `bun run smoke` requires the user's real database and performs read-only inspection. Keep live-library editing tests separate and explicitly authorized.
 
 ## Architecture
 
@@ -141,6 +149,14 @@ Keep a strict two-layer boundary.
 
 - [src/upnote.ts](src/upnote.ts) — `UpNoteRepository`. This is the only place that may touch SQL or `bun:sqlite`. Database path resolution, soft-delete filtering, and timestamp conversion also belong here.
 - [src/index.ts](src/index.ts) — MCP server wiring (`registerTool`) and user-facing formatting helpers only. Do not write SQL here.
+- [src/editing.ts](src/editing.ts) — pure edit preparation/version helpers and fail-closed process detection; no SQL. Use append mode to preserve existing attachment HTML. Do not automatically retry or restore a committed edit after a conflict.
+- [src/clipboard.ts](src/clipboard.ts), [src/note-clipboard.ps1](src/note-clipboard.ps1) — clipboard data staging only, with no window/input automation. The computer-use client owns verified focus, selection, paste and visual checks.
+- [src/native-bridge.ts](src/native-bridge.ts) — loopback-only CDP transport and fixed native app actions. Validate app identity/capabilities/database/locks, refuse unsaved input and pop-outs, never read credentials or patch the installed app. No SQL belongs here; calls go through the app's own `sqlPreload` read API and native store action.
+- [src/compatibility.ts](src/compatibility.ts) — pure SQLite affinity/schema and shared note-value validation. Keep the note validator self-contained because it is serialized into the renderer alongside the fixed native action.
+- [src/connection.ts](src/connection.ts) — connection-only recovery and opt-in background app startup. Retry only discovery/readiness, preserve profile/lock/API errors, dispose failed/probe sockets, and never wrap a mutation in retry logic.
+- [src/partial-edit.ts](src/partial-edit.ts) — source-offset HTML edits, compact context and heading boundaries; no SQL. Resolve every operation against the same original snapshot, reject overlaps/ambiguous matches/protected-object deletion, and do not serialize untouched HTML. Partial MCP results must never echo the whole old/new note. Native saves verify exact planned HTML in addition to the usual text/UI/sync checks.
+
+Reject final HTML over the conservative 1000000-byte UTF-8 ceiling before backup/write; UpNote's documented HTML cloud-sync limit is about 1 MB. Oversized notes may still be inspected or shrunk. Keep native save-request timeouts bounded and never retry a timed-out mutation.
 
 When adding a feature, always follow this sequence: add a method to `UpNoteRepository`, then register a tool in `src/index.ts`.
 
@@ -161,7 +177,7 @@ These are observed facts about the UpNote database and cannot be derived from fi
 - Every tool should return `structuredContent` and include `dbPath`
 - This project is intended for a global audience, so user-facing strings, tool descriptions, errors, and the main README should be written in English
 - Commit messages should also be written in English
-- Use `UPNOTE_DB` when provided; otherwise fall back to `~/Library/Containers/com.getupnote.desktop/Data/Library/Application Support/UpNote/upnote.sqlite3`
+- Use `UPNOTE_DB` when provided; Windows defaults to `%APPDATA%/UpNote/upnote.sqlite3`, macOS to its existing container path
 
 ## Repository Notes
 
