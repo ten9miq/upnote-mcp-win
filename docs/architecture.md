@@ -18,7 +18,9 @@ The server exposes fixed editing/status operations, not arbitrary JavaScript or 
 | Variable | Meaning / default |
 | --- | --- |
 | `UPNOTE_DB` | Absolute SQLite path. Default `%APPDATA%\UpNote\upnote.sqlite3` on Windows. |
-| `UPNOTE_BACKUPS_DIR` | Per-note archive folder; default `MCP Backups` beside the database. No automatic retention cleanup. |
+| `UPNOTE_BACKUPS_DIR` | Per-note archive folder; default `MCP Backups` beside the database. |
+| `UPNOTE_BACKUP_MAX_GENERATIONS` | Positive integer; default 10 generations per note/profile. Latest valid archive is protected. |
+| `UPNOTE_BACKUP_MAX_TOTAL_BYTES` | Positive integer; default 536870912 (512 MiB) for all managed archives/payloads in that root. Protection can leave the limit exceeded. |
 | `UPNOTE_CDP_URL` | Opt-in local origin, e.g. `http://127.0.0.1:19330`. Omit for local search / URL creation. |
 | `UPNOTE_AUTO_START` | `1` enables background app preparation and bounded discovery/readiness recovery; default off. |
 | `UPNOTE_AUTO_START_LAUNCHER` | Installed Store launcher; default `%LOCALAPPDATA%\UpNoteMcp\launch.ps1`. Install templates as described in the README first. |
@@ -41,6 +43,8 @@ UPNOTE_DB = 'C:\Users\YOUR_NAME\AppData\Roaming\UpNote\upnote.sqlite3'
 UPNOTE_CDP_URL = 'http://127.0.0.1:19330'
 UPNOTE_AUTO_START = '1'
 UPNOTE_AUTO_START_LAUNCHER = 'C:\Users\YOUR_NAME\AppData\Local\UpNoteMcp\launch.ps1'
+UPNOTE_BACKUP_MAX_GENERATIONS = '10'
+UPNOTE_BACKUP_MAX_TOTAL_BYTES = '536870912'
 ```
 
 Existing registrations such as `upnote-local` may keep their server key. Do not duplicate two registrations unintentionally. The server advertises tools before optional app preparation and opens the DB lazily. A startup failure does not remove search tools; later operations recheck availability. Concurrent requests share startup work within MCP; installed launchers use a per-user Windows mutex across processes. The app is never force-restarted to recover a connection.
@@ -58,7 +62,7 @@ Existing registrations such as `upnote-local` may keep their server key. Do not 
 
 Backups now contain only the target note's complete row, rather than copying the full library on every edit. `MCP Backups/edit-…/note.sqlite3` contains a `notes` table with exactly one pre-edit row and a `mcp_backup_metadata` table (`format_version: 1`, `kind: upnote-note`, note ID/version, UTC time and source DB path). All stored note columns, including additive columns, HTML and attachment/tag references, are retained. Table constraints, triggers, indexes, other notes, notebook/tag definitions or membership lists in other tables, external attachment blobs and cloud state are not copied. The source writer reservation ensures the captured row/version stays unchanged until backup finishes; committed WAL data is visible through the source query as usual.
 
-This is a recovery archive, **not a complete UpNote database**: never replace `upnote.sqlite3` with it. Inspect the saved row and apply a reviewed note-level recovery through the app; there is no automatic restore or mutation retry. Existing full-library backups are left in place, and new per-note archives are also retained until manually removed. Dry runs and no-op edits create no backup.
+This is a recovery archive, **not a complete UpNote database**: never replace `upnote.sqlite3` with it. Inspect the saved row and apply a reviewed note-level recovery through the app; there is no automatic restore or mutation retry. Existing full-library backups are left in place; older per-note archives are automatically pruned under [the retention policy](note-backups.md#automatic-retention), while every note's latest archive is protected. Dry runs and no-op edits create no backup.
 
 ## Fallback workflows
 

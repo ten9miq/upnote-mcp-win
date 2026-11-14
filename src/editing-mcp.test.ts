@@ -20,7 +20,8 @@ test("MCP get_note version, update preview, commit, backup and stale-write error
     const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
     const transport = new StdioClientTransport({
       command: process.execPath, args: ["run", resolve(import.meta.dir, "index.ts")],
-      env: { ...env, UPNOTE_DB: path, UPNOTE_BACKUPS_DIR: join(directory, "backups"), UPNOTE_AUTO_START: "0" }, stderr: "pipe",
+      env: { ...env, UPNOTE_DB: path, UPNOTE_BACKUPS_DIR: join(directory, "backups"), UPNOTE_AUTO_START: "0",
+        UPNOTE_BACKUP_MAX_GENERATIONS: "1", UPNOTE_BACKUP_MAX_TOTAL_BYTES: "1" }, stderr: "pipe",
     });
     await client.connect(transport);
     expect(client.getServerVersion()).toEqual({ name: packageInfo.name, version: packageInfo.version });
@@ -40,6 +41,7 @@ test("MCP get_note version, update preview, commit, backup and stale-write error
     const written = await client.callTool({ name: "update_note", arguments: args });
     expect(written.isError).not.toBe(true);
     expect(written.structuredContent).toMatchObject({ id: "test-note", committed: true, databaseVerification: "matches", cloudSync: "unverified" });
+    expect(written.structuredContent).toMatchObject({ backupRetention: { maxGenerations: 1, maxTotalBytes: 1, archiveCount: 1, protectedArchives: 1, limitsExceeded: true } });
     const result = written.structuredContent as { backupPath: string };
     const backup = new Database(result.backupPath, { readonly: true, create: false });
     try { expect(backup.query("SELECT text FROM notes").get()).toEqual({ text: "Test\nBefore" }); }

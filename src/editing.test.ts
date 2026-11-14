@@ -141,7 +141,7 @@ test("post-commit overwrite is reported as a conflict without an automatic retry
   expect(result.committed).toBe(true);
   expect(result.databaseVerification).toBe("conflict");
   expect(f.row().html).toBe("<h2>Cached title</h2>");
-  expect(readdirSync(f.backupsDir)).toHaveLength(1);
+  expect(readdirSync(f.backupsDir).filter(name => name.startsWith("edit-"))).toHaveLength(1);
 });
 
 test("backup failure leaves the original untouched and releases the write lock", async () => {
@@ -159,7 +159,7 @@ test("SQL failure rolls back after backup and retains the backup", async () => {
   f.db.exec("CREATE TRIGGER reject_edit BEFORE UPDATE ON notes BEGIN SELECT RAISE(ABORT, 'fixture failure'); END");
   await expect(f.repository.updateNote({ ...f.params(), content: "Never commit" })).rejects.toThrow("Edit not committed");
   expect(f.row()).toEqual(before);
-  expect(readdirSync(f.backupsDir)).toHaveLength(1);
+  expect(readdirSync(f.backupsDir).filter(name => name.startsWith("edit-"))).toHaveLength(1);
 });
 
 test("concurrent SQLite writer prevents editing without changing or backing up data", async () => {
@@ -334,7 +334,7 @@ test("clipboard staging failure leaves the library unchanged and retains its bac
   const before = f.row();
   await expect(f.repository.prepareAppNoteEdit({ ...f.params(), content: "No" })).rejects.toThrow("clipboard busy");
   expect(f.row()).toEqual(before);
-  expect(readdirSync(f.backupsDir)).toHaveLength(1);
+  expect(readdirSync(f.backupsDir).filter(name => name.startsWith("edit-"))).toHaveLength(1);
 });
 
 function nativeChannel(apply: () => void, check: () => void = () => {}): NativeChannel {
@@ -473,7 +473,7 @@ test("partial native batches preserve rich HTML/attachment references, use one b
     { type: "replace_section", section: { heading: "B" }, content: "new section", contentFormat: "text" },
   ], waitMs: 0 });
   expect(result.state).toBe("synced"); expect(result.htmlPreserved).toBe(true); expect(result.changes).toHaveLength(2);
-  expect(calls).toBe(1); expect(readdirSync(f.backupsDir)).toHaveLength(1);
+  expect(calls).toBe(1); expect(readdirSync(f.backupsDir).filter(name => name.startsWith("edit-"))).toHaveLength(1);
   expect(f.row().html).toBe(expected); expect(f.row().fileIds).toBe(before.fileIds); expect(f.row().firstImage).toBe(before.firstImage);
   expect("note" in result).toBe(false); expect("preview" in result).toBe(false);
   expect(JSON.stringify(result)).not.toContain("UNCHANGED-SENTINEL");

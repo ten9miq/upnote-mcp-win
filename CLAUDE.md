@@ -132,6 +132,8 @@ Gate native editing on required API/state capabilities, SQLite column affinities
 
 The fallback is `prepare_app_note_edit` plus a computer-use client's verified editor paste, then `complete_app_note_edit`. App-editor clipboard HTML must be explicit UTF-8 CF_HTML bytes, not a .NET ANSI string. Never manually set sync flags or claim independent other-device verification in either workflow.
 
+`backup-retention.ts` enforces configurable defaults of 10 generations per note/source profile and 512 MiB of managed archives/payloads after the new archive is verified and flushed. Always preserve each note/profile's latest valid archive, the just-created archive and active preparation pins. Report protected-limit excess/deletion failures in `backupRetention`; do not delete the last copy to meet a quota. Serialize creation/pruning across processes with the root's SQLite lock. Only unlink validated managed files within the resolved root, never recursively delete directories or follow symlinks/junctions. Keep legacy full-library/corrupt/unrecognized files untouched. Dry runs/no-ops must not prune. See `docs/note-backups.md` for environment settings and byte-total exclusions.
+
 ## Commands
 
 ```bash
