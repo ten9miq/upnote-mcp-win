@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 export function windowsClipboardHtml(fragment: string): Buffer {
   const prefix = "<html><body><!--StartFragment-->";
@@ -19,7 +20,10 @@ export async function stageNoteClipboard(payloadPath: string): Promise<void> {
   const payload = JSON.parse(readFileSync(payloadPath, "utf8"));
   payload.cfHtmlBase64 = windowsClipboardHtml(payload.html).toString("base64");
   writeFileSync(payloadPath, JSON.stringify(payload, null, 2));
-  const script = fileURLToPath(new URL("./note-clipboard.ps1", import.meta.url));
+  const sourceScript = fileURLToPath(new URL("./note-clipboard.ps1", import.meta.url));
+  // Compiled MCPB executables ship the PowerShell helper beside the binary.
+  const script = existsSync(sourceScript) ? sourceScript : join(dirname(process.execPath), "note-clipboard.ps1");
+  if (!existsSync(script)) throw new Error("The packaged note-clipboard.ps1 helper is missing.");
   const child = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-File", script, "-PayloadPath", payloadPath], {
     stdout: "ignore", stderr: "pipe", windowsHide: true,
   });

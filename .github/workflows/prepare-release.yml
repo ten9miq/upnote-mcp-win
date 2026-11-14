@@ -1,0 +1,31 @@
+name: Prepare Windows release artifacts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run test
+      - run: bun run pack
+      - run: bun run build:mcpb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upnote-mcp-win-windows-artifacts
+          path: |
+            dist/*.tgz
+            dist/*.mcpb
+          if-no-files-found: error

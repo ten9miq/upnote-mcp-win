@@ -14,6 +14,7 @@ import {
   type TagResult,
 } from "./upnote";
 import { openUpNoteUrl } from "./url";
+import packageInfo from "../package.json";
 
 // Advertise MCP tools even if the database is temporarily unavailable at startup.
 const repository = new UpNoteRepository(undefined, { lazyOpen: true });
@@ -120,8 +121,8 @@ function formatTimeBasedResults(label: string, notes: ReturnType<UpNoteRepositor
 
 async function main(): Promise<void> {
   const server = new McpServer({
-    name: "upnote-reader",
-    version: "0.1.0",
+    name: packageInfo.name,
+    version: packageInfo.version,
   });
 
   server.registerTool(
@@ -439,7 +440,7 @@ async function main(): Promise<void> {
         "content replaces the body by default; mode=append preserves existing rich text and attachments.",
         "Quit UpNote for normal edits. allowWhileRunning=true enables experimental live writes only for a synced note.",
         "Live writes may be overwritten by UpNote's UI cache; database verification does not prove cloud sync.",
-        "For app-visible edits and sync acknowledgement while running, prefer prepare_app_note_edit, computer-use paste, and complete_app_note_edit.",
+        "For app-visible edits and sync acknowledgement while running, prefer update_note_in_app or patch_note_in_app over local CDP.",
         "After a conflict or a committed-but-unverified result, inspect the note and backup; never retry blindly.",
       ].join(" "),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },

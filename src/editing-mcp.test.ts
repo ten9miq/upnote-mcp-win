@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import packageInfo from "../package.json";
 
 test("MCP get_note version, update preview, commit, backup and stale-write error use an isolated DB", async () => {
   const directory = mkdtempSync(join(tmpdir(), "upnote-edit-mcp-"));
@@ -22,6 +23,7 @@ test("MCP get_note version, update preview, commit, backup and stale-write error
       env: { ...env, UPNOTE_DB: path, UPNOTE_BACKUPS_DIR: join(directory, "backups"), UPNOTE_AUTO_START: "0" }, stderr: "pipe",
     });
     await client.connect(transport);
+    expect(client.getServerVersion()).toEqual({ name: packageInfo.name, version: packageInfo.version });
     const tool = (await client.listTools()).tools.find((item) => item.name === "update_note");
     expect(tool?.annotations?.readOnlyHint).toBe(false);
     const toolNames = (await client.listTools()).tools.map(item => item.name);

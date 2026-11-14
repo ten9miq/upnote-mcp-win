@@ -33,7 +33,7 @@ const transport = new StdioClientTransport({
   env: inheritedEnvironment(),
   stderr: "pipe",
 });
-const client = new Client({ name: "upnote-mcp-smoke", version: "1.0.0" });
+const client = new Client({ name: "upnote-mcp-win-smoke", version: "1.0.0" });
 
 try {
   await client.connect(transport);

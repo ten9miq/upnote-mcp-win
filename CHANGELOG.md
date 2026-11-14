@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This fork starts an independent version line at **0.1.0** as `@ten9miq/upnote-mcp-win`. The 0.2.x entries below describe inherited bellx2/upnote-mcp history, not published releases of this fork.
+
 ### Added
 
 - `get_note_edit_context` and `patch_note_in_app`: compact reads plus literal text replacement, section replacement/append and heading rename, preserving untouched HTML source
@@ -30,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Back up only the complete target note row to a checked/flushed `note.sqlite3` recovery archive before every direct, native or partial edit, excluding unrelated notes/tables. Preserve version guards, no-write-on-backup-failure, and existing full-library backups.
+- Distinguish fork package/CLI/MCP identity, repository/support links and Windows bundle metadata from upstream; retain MIT attribution
+- Reorganize English/Japanese READMEs around CDP behavior, linked implementation comparisons, source setup, automatic launch, security and operational limits
+- Include runtime launcher/clipboard helpers in source distribution, exclude tests, and build Windows MCPB artifacts with a matching external PowerShell helper
+- Replace inherited automatic npm/macOS release publication with Windows CI and a manual artifact-only preparation workflow; no publication is implied
 - Reject final HTML above a conservative 1000000 UTF-8 bytes before backup/write; support inspecting and shrinking an existing oversized note
 - Allow 30 seconds for native save requests; keep bounded read-only discovery and separate sync checks
 - Run the complete test suite via `bun run test`, with per-file OS isolation for observed Bun 1.4.0/Windows shared-state crashes
@@ -37,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report native compatibility diagnostics and support compatible Promise-returning app actions with write guards rechecked after navigation
 - `get_note` returns a version token for edit conflict detection
 - Direct SQLite edits normally require UpNote to be quit; their live results never claim UI refresh or cloud-sync success
+
+## Upstream history (bellx2/upnote-mcp)
 
 ## [0.2.7] - 2026-08-19
 
@@ -95,7 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Simplified the published CLI entrypoint
 
-[Unreleased]: https://github.com/bellx2/upnote-mcp/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/ten9miq/upnote-mcp-win/compare/385a32e...HEAD
 [0.2.7]: https://github.com/bellx2/upnote-mcp/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/bellx2/upnote-mcp/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/bellx2/upnote-mcp/compare/v0.2.4...v0.2.5

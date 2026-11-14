@@ -1,30 +1,32 @@
 {
   "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/main/schemas/mcpb-manifest-v0.3.schema.json",
   "manifest_version": "0.3",
-  "name": "upnote-mcp",
-  "display_name": "UpNote MCP",
-  "version": "0.2.7",
-  "description": "Search, read, create, and edit UpNote notes with automatic backups.",
-  "long_description": "Unofficial MCP server for UpNote. Reads use a read-only SQLite connection; creation uses UpNote's URL scheme. In-place edits require a database backup and version check. Quit UpNote for normal editing; live editing is experimental and cannot guarantee UI or cloud sync. Requires the UpNote desktop app.",
+  "name": "upnote-mcp-win",
+  "display_name": "UpNote MCP for Windows (CDP)",
+  "version": "0.1.0",
+  "description": "Windows UpNote live and partial editing over local CDP, with backups and sync checks.",
+  "long_description": "Independent Windows fork of bellx2/upnote-mcp, maintained by ten9miq. Reads use read-only SQLite; creation uses UpNote URLs. Opt-in CDP edits call the running app's internal save action, preserve note IDs and check editor reflection plus fresh app sync acknowledgement. Internal APIs are unsupported and checked for compatibility. Not affiliated with UpNote. Other-device receipt is not verified. Direct SQLite editing remains an advanced fallback.",
   "author": {
-    "name": "bellx2",
-    "url": "https://github.com/bellx2"
+    "name": "ten9miq",
+    "url": "https://github.com/ten9miq"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/bellx2/upnote-mcp.git"
+    "url": "https://github.com/ten9miq/upnote-mcp-win.git"
   },
-  "homepage": "https://github.com/bellx2/upnote-mcp#readme",
-  "documentation": "https://github.com/bellx2/upnote-mcp#readme",
-  "support": "https://github.com/bellx2/upnote-mcp/issues",
+  "homepage": "https://github.com/ten9miq/upnote-mcp-win#readme",
+  "documentation": "https://github.com/ten9miq/upnote-mcp-win#readme",
+  "support": "https://github.com/ten9miq/upnote-mcp-win/issues",
   "server": {
     "type": "binary",
-    "entry_point": "server/upnote-mcp",
+    "entry_point": "server/upnote-mcp-win.exe",
     "mcp_config": {
-      "command": "${__dirname}/server/upnote-mcp",
+      "command": "${__dirname}/server/upnote-mcp-win.exe",
       "args": [],
       "env": {
-        "UPNOTE_DB": "${user_config.upnote_db}"
+        "UPNOTE_DB": "${user_config.upnote_db}",
+        "UPNOTE_CDP_URL": "${user_config.upnote_cdp_url}",
+        "UPNOTE_AUTO_START": "0"
       }
     }
   },
@@ -51,19 +53,26 @@
     { "name": "get_note_edit_context", "description": "Read compact version/size, headings and targeted text or section context" },
     { "name": "patch_note_in_app", "description": "Apply source-preserving text and heading-section edits with backup, conflict and sync verification" }
   ],
-  "keywords": ["upnote", "notes", "mcp", "productivity"],
+  "keywords": ["upnote", "notes", "mcp", "windows", "cdp"],
   "license": "MIT",
   "user_config": {
     "upnote_db": {
       "type": "file",
       "title": "UpNote Database",
-      "description": "Path to upnote.sqlite3. Use the file picker to select the file. If omitted, the default UpNote desktop app location is used.",
+      "description": "Path to upnote.sqlite3. Leave empty to use %APPDATA%/UpNote/upnote.sqlite3.",
       "required": false,
-      "default": "${HOME}/Library/Containers/com.getupnote.desktop/Data/Library/Application Support/UpNote/upnote.sqlite3"
+      "default": ""
+    },
+    "upnote_cdp_url": {
+      "type": "string",
+      "title": "Optional local UpNote CDP origin",
+      "description": "Leave empty for search/URL creation only. For live editing, start UpNote with CDP and enter http://127.0.0.1:19330. This bundle does not enable automatic app startup.",
+      "required": false,
+      "default": ""
     }
   },
   "compatibility": {
     "claude_desktop": ">=0.10.0",
-    "platforms": ["darwin"]
+    "platforms": ["win32"]
   }
 }

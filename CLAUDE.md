@@ -116,7 +116,9 @@ For more information, read the Bun API docs in `node_modules/bun-types/docs/**.m
 
 ---
 
-# Project-Specific Guidance (upnote-mcp)
+# Project-Specific Guidance (upnote-mcp-win)
+
+Public identity: `@ten9miq/upnote-mcp-win`, executable `upnote-mcp-win`, repository/support `ten9miq/upnote-mcp-win`. Keep upstream attribution to bellx2 and its MIT notice, but never use upstream package/release/support URLs as this fork's installation target. Versioning is independent, starting at 0.1.0. Source checkout setup is authoritative until a fork package/release has actually been published. See `docs/releasing.md` for package and Windows bundle checks; publication is a separate explicit action.
 
 ## Overview
 

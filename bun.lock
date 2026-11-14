@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "upnote_mcp",
+      "name": "@ten9miq/upnote-mcp-win",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.30.0",
         "entities": "^9.0.0",
