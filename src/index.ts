@@ -453,6 +453,47 @@ async function main(): Promise<void> {
   );
 
   server.registerTool(
+    "get_upnote_bridge_status",
+    {
+      description: "Check the opt-in local UpNote CDP bridge without Computer Use. Requires UPNOTE_CDP_URL. With UPNOTE_AUTO_START=1, prepares a closed app automatically. Checks DB columns/affinities/unique IDs and internal methods/state types, plus profile/lock state. App version is informational. Optional id validates note data and reports editor/sync metadata. Never force-restarts or unlocks UpNote.",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: { id: z.string().min(1).optional() },
+    },
+    async ({ id }) => {
+      const result = await repository.getNativeBridgeStatus(id);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: { ...result, dbPath: repository.getResolvedDbPath() } };
+    },
+  );
+
+  server.registerTool(
+    "update_note_in_app",
+    {
+      description: [
+        "Edit the same note through UpNote's internal updateNotes action over local CDP, refresh its editor and await app sync acknowledgement. No Computer Use, typing or clipboard.",
+        "Requires the opt-in bridge (UPNOTE_CDP_URL), compatible internal APIs and DB structure/data, the correct profile, and no unsaved editor changes or open pop-out note windows. App version is informational only.",
+        "First get_note and pass its version as expectedVersion. A verified DB backup is required before the app action. The MCP server never writes note rows or sync flags in this workflow.",
+        "Only state=synced confirms expected content, editor reflection, and a fresh app-reported sync acknowledgement; other-device receipt is not independently checked.",
+        "On timeout, conflict or unknown outcome, query get_upnote_bridge_status; never repeat a mutation automatically.",
+      ].join(" "),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      inputSchema: {
+        id: z.string().min(1), expectedVersion: z.string().regex(/^[a-f\d]{64}$/),
+        title: z.string().min(1).optional(), content: z.string().optional(),
+        contentFormat: z.enum(["markdown", "text"]).optional(), mode: z.enum(["replace", "append"]).optional(),
+        dryRun: z.boolean().optional(), waitMs: z.number().int().min(0).max(30_000).optional(),
+      },
+    },
+    async ({ waitMs, ...params }) => {
+      const result = await repository.updateNoteInApp(params, waitMs);
+      return {
+        isError: result.state === "conflict" || result.state === "unavailable",
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: { ...result, dbPath: repository.getResolvedDbPath() },
+      };
+    },
+  );
+
+  server.registerTool(
     "prepare_app_note_edit",
     {
       description: [

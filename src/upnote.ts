@@ -5,6 +5,8 @@ import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { isUpNoteRunning, noteVersion, prepareNoteUpdate, type UpdateNoteParams } from "./editing";
 import { stageNoteClipboard } from "./clipboard";
+import { NativeConnection, nativeExpression, type NativeChannel } from "./native-bridge";
+import { assertNativeSchema, assertNativeNoteData, type NativeColumn } from "./compatibility";
 
 export type { UpdateNoteParams } from "./editing";
 
@@ -13,6 +15,22 @@ type RepositoryOptions = {
   backupsDir?: string;
   observeLiveMs?: number;
   stageClipboard?: (payloadPath: string) => Promise<void>;
+  nativeEndpoint?: string;
+  connectNative?: (endpoint: string) => Promise<NativeChannel>;
+};
+
+export type NativeEditResult = {
+  id: string;
+  applied: boolean | null;
+  state: "unchanged" | "synced" | "awaiting_sync" | "awaiting_ui" | "conflict" | "unavailable";
+  uiUpdated: boolean;
+  cloudSync: "app_acknowledged" | "unverified";
+  otherDeviceVerified: false;
+  backupPath: string | null;
+  note: NoteDetail | null;
+  message: string;
+  preview: { title: string; content: string; html: string } | null;
+  compatibility: { database: ReturnType<typeof assertNativeSchema>; runtime?: unknown };
 };
 
 type AppEditSession = {
@@ -317,6 +335,117 @@ export class UpNoteRepository {
     const fd = openSync(backupPath, "r+");
     try { fsyncSync(fd); } finally { closeSync(fd); }
     return backupPath;
+  }
+
+  private async nativeConnection(): Promise<NativeChannel> {
+    const endpoint = this.options.nativeEndpoint ?? process.env.UPNOTE_CDP_URL;
+    if (!endpoint) throw new Error("UPNOTE_CDP_URL is not configured. Exit UpNote normally and start it with scripts/start-upnote-bridge.ps1, then configure the MCP environment. The server never force-restarts UpNote.");
+    return (this.options.connectNative ?? NativeConnection.connect)(endpoint);
+  }
+
+  private nativeSchemaCompatibility(db = this.db) {
+    const table = db.query<{ type: string }, []>("SELECT type FROM sqlite_schema WHERE name='notes'").get();
+    const columns = db.query<NativeColumn, []>("PRAGMA table_xinfo(notes)").all();
+    const primary = columns.filter(column => column.pk > 0);
+    let uniqueId = primary.length === 1 && primary[0]!.name === "id";
+    if (!uniqueId && table?.type === "table") {
+      for (const index of db.query<{ name: string; unique: number; partial: number }, []>("PRAGMA index_list(notes)").all()) {
+        if (index.unique !== 1 || index.partial !== 0) continue;
+        const keys = db.query<{ name: string | null }, [string]>("SELECT name FROM pragma_index_info(?) ORDER BY seqno").all(index.name);
+        if (keys.length === 1 && keys[0]!.name === "id") { uniqueId = true; break; }
+      }
+    }
+    const version = db.query<{ schema_version: number }, []>("PRAGMA schema_version").get();
+    return assertNativeSchema(table?.type, columns, uniqueId, version?.schema_version ?? 0);
+  }
+
+  async getNativeBridgeStatus(id?: string) {
+    const connection = await this.nativeConnection();
+    try {
+      const database = this.nativeSchemaCompatibility();
+      const runtime = await connection.evaluate<Record<string, unknown>>(nativeExpression({ action: "status", databasePath: this.dbPath }));
+      const compatibility = { database, runtime: runtime.compatibility };
+      if (!id) return { ready: true, ...runtime, compatibility };
+      const expected = this.db.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id=? AND deleted=0 AND trashed=0").get(id);
+      if (!expected) throw new Error("Active note not found.");
+      assertNativeNoteData(expected, "sqlite");
+      const ui = await connection.evaluate<{ editorMatches: boolean; compatibility?: unknown }>(nativeExpression({ action: "verify", databasePath: this.dbPath, expected }));
+      return { ready: true, ...runtime, compatibility: { database, runtime: ui.compatibility ?? runtime.compatibility }, id, uiUpdated: ui.editorMatches, note: this.getNote(id) };
+    } finally { connection.close(); }
+  }
+
+  async updateNoteInApp(params: UpdateNoteParams, waitMs = 20_000): Promise<NativeEditResult> {
+    const id = params.id.trim();
+    if (!id || !/^[a-f\d]{64}$/.test(params.expectedVersion)) throw new Error("Provide id and expectedVersion from get_note.");
+    if (params.title === undefined && params.content === undefined) throw new Error("Provide title or content.");
+    if (params.title !== undefined && (!params.title.trim() || /[\r\n]/.test(params.title))) throw new Error("title must be a non-empty single line.");
+    if (params.mode === "append" && !params.content?.trim()) throw new Error("Append requires non-empty content.");
+    const database = this.nativeSchemaCompatibility();
+    const before = this.db.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id=? AND deleted=0 AND trashed=0").get(id);
+    if (!before || noteVersion(before) !== params.expectedVersion) throw new Error("The note changed or is unavailable. Read get_note again.");
+    assertNativeNoteData(before, "sqlite");
+    const patch = prepareNoteUpdate(before, params);
+    return this.applyNativeFields(id, before, patch, database, !!params.dryRun, waitMs);
+  }
+
+  private async applyNativeFields(id: string, before: Record<string, unknown>, patch: Record<string, string | number>, database: ReturnType<typeof assertNativeSchema>, dryRun: boolean, waitMs: number): Promise<NativeEditResult> {
+    const expectedVersion = noteVersion(before);
+    const connection = await this.nativeConnection();
+    const result: NativeEditResult = { id, applied: false, state: "unchanged", uiUpdated: false, cloudSync: "unverified", otherDeviceVerified: false, backupPath: null, note: this.getNote(id), message: "Nothing to change.", preview: dryRun ? { title: String(patch.title ?? before.title ?? ""), content: String(patch.text ?? before.text ?? ""), html: String(patch.html ?? before.html ?? "") } : null, compatibility: { database } };
+    try {
+      const preflight = await connection.evaluate<{ compatibility?: unknown }>(nativeExpression({ action: "check", databasePath: this.dbPath, expected: before }));
+      result.compatibility.runtime = preflight.compatibility;
+      if (!Object.keys(patch).length || dryRun) {
+        result.message = dryRun ? "Native preflight passed; dry run made no changes." : "Nothing to change.";
+        return result;
+      }
+      const writer = new Database(this.dbPath, { readwrite: true, create: false, strict: true });
+      try {
+        writer.exec("PRAGMA busy_timeout=2000; BEGIN IMMEDIATE");
+        this.nativeSchemaCompatibility(writer);
+        const current = writer.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id=?").get(id);
+        if (!current || noteVersion(current) !== expectedVersion) throw new Error("The note changed before backup. Read get_note again.");
+        result.backupPath = this.backupBeforeEdit();
+      } finally {
+        if (writer.inTransaction) writer.exec("ROLLBACK");
+        writer.close();
+      }
+      // No UpNote row was written above. The app owns all persistence and sync.
+      const startedAt = Date.now();
+      try {
+        await connection.evaluate(nativeExpression({ action: "apply", databasePath: this.dbPath, expected: before, patch }), 30_000);
+        result.applied = true;
+      } catch (error) {
+        result.applied = null;
+        result.note = null;
+        result.state = "unavailable";
+        result.message = `Native request failed or its outcome is unknown: ${String(error)}. Inspect the current note and backup; do not retry automatically.`;
+        return result;
+      }
+      const normalize = (value: unknown) => String(value ?? "").replace(/\s+/gu, " ").trim();
+      const wantedTitle = patch.title ?? before.title;
+      const wantedText = patch.text ?? before.text;
+      const deadline = Date.now() + Math.min(30_000, Math.max(0, waitMs));
+      do {
+        const actual = this.db.query<Record<string, unknown>, [string]>("SELECT * FROM notes WHERE id=?").get(id);
+        if (actual) assertNativeNoteData(actual, "sqlite");
+        if (!actual || actual.deleted !== 0 || actual.trashed !== 0 || actual.createdAt !== before.createdAt || actual.title !== wantedTitle || normalize(actual.text) !== normalize(wantedText)) {
+          result.state = "conflict"; result.message = "The saved note differs from the native edit. Inspect it and the backup; do not retry automatically."; return result;
+        }
+        const ui = await connection.evaluate<{ editorMatches: boolean }>(nativeExpression({ action: "verify", databasePath: this.dbPath, expected: before, patch }));
+        result.uiUpdated = ui.editorMatches;
+        result.note = this.getNote(id);
+        const synced = actual.synced === 1 && Number(actual.syncedAt) >= Number(actual.updatedAt) && Number(actual.syncedAt) >= startedAt;
+        if (synced) result.cloudSync = "app_acknowledged";
+        result.state = synced ? result.uiUpdated ? "synced" : "awaiting_ui" : "awaiting_sync";
+        if (result.state === "synced") { result.message = "UpNote's internal updateNotes action saved the same note, refreshed the editor, and recorded a fresh sync acknowledgement. Other-device receipt was not independently checked."; return result; }
+        if (Date.now() >= deadline) { result.message = "The native edit was applied, but UI/sync verification is incomplete. Query get_upnote_bridge_status; do not repeat the edit automatically."; return result; }
+        await Bun.sleep(250);
+      } while (true);
+    } catch (error) {
+      if (!result.applied) throw error;
+      result.state = "unavailable"; result.note = null; result.message = `The app accepted the edit but verification failed: ${String(error)}. Do not retry automatically.`; return result;
+    } finally { connection.close(); }
   }
 
   async prepareAppNoteEdit(params: UpdateNoteParams) {

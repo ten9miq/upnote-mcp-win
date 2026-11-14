@@ -5,11 +5,12 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { htmlToPlainText, renderBody } from "./editing";
 import { UpNoteRepository } from "./upnote";
+import { NativeConnectionUnavailable, type NativeChannel } from "./native-bridge";
 
 const cleanup: Array<() => void> = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 
-function fixture(options: { running?: () => boolean; journal?: "WAL" | "DELETE"; observeLiveMs?: number; stageClipboard?: (path: string) => Promise<void>; } = {}) {
+function fixture(options: { running?: () => boolean; journal?: "WAL" | "DELETE"; observeLiveMs?: number; stageClipboard?: (path: string) => Promise<void>; connectNative?: () => Promise<NativeChannel>; } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "upnote-edit-test-"));
   cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, "upnote.sqlite3");
@@ -33,9 +34,11 @@ function fixture(options: { running?: () => boolean; journal?: "WAL" | "DELETE";
       ('note-a','Old title','<h2>Old title</h2><p>Old body</p>','Old title\nOld body','Old body',100,200),
       ('note-b','Other','<h2>Other</h2>','Other','Other',101,201);
   `);
+  if (options.connectNative) db.exec("ALTER TABLE notes ADD COLUMN syncedAt DOUBLE DEFAULT 1");
   const repository = new UpNoteRepository(path, {
     backupsDir, isUpNoteRunning: options.running ?? (() => false), observeLiveMs: options.observeLiveMs ?? 0,
     stageClipboard: options.stageClipboard ?? (async () => {}),
+    ...(options.connectNative ? { nativeEndpoint: "http://127.0.0.1:19330", connectNative: options.connectNative } : {}),
   });
   cleanup.push(() => repository.close());
   const row = () => db.query<Record<string, unknown>, []>("SELECT * FROM notes WHERE id='note-a'").get()!;
@@ -312,4 +315,115 @@ test("clipboard staging failure leaves the library unchanged and retains its bac
   await expect(f.repository.prepareAppNoteEdit({ ...f.params(), content: "No" })).rejects.toThrow("clipboard busy");
   expect(f.row()).toEqual(before);
   expect(readdirSync(f.backupsDir)).toHaveLength(1);
+});
+
+function nativeChannel(apply: () => void, check: () => void = () => {}): NativeChannel {
+  return {
+    async evaluate<T>(expression: string): Promise<T> {
+      if (expression.includes('"action":"apply"')) { apply(); return { accepted: true } as T; }
+      if (expression.includes('"action":"check"')) check();
+      return { editorMatches: true } as T;
+    },
+    close() {},
+  };
+}
+
+test("native repository backs up before the app action and verifies fresh sync acknowledgement", async () => {
+  let calls = 0;
+  const f = fixture({ connectNative: async () => nativeChannel(() => {
+    calls++;
+    const now = Date.now();
+    f.db.query("UPDATE notes SET html=?,text=?,updatedAt=?,syncedAt=?,synced=1,revision=revision+1 WHERE id='note-a'")
+      .run("<h2>Old title</h2><p>Native body</p>", "Old title\nNative body", now, now);
+  }) });
+  const before = f.row();
+  const result = await f.repository.updateNoteInApp({ ...f.params(), content: "Native body" }, 0);
+  expect(calls).toBe(1);
+  expect(result.state).toBe("synced");
+  expect(result.cloudSync).toBe("app_acknowledged");
+  expect(result.uiUpdated).toBe(true);
+  expect(result.otherDeviceVerified).toBe(false);
+  expect(f.row().id).toBe(before.id);
+  const backup = new Database(result.backupPath!, { readonly: true, create: false });
+  try { expect(backup.query("SELECT * FROM notes WHERE id='note-a'").get()).toEqual(before); }
+  finally { backup.close(); }
+});
+
+test("native backup failure or failed preflight never invokes the app mutation", async () => {
+  let calls = 0;
+  const backupFailure = fixture({ connectNative: async () => nativeChannel(() => { calls++; }) });
+  const before = backupFailure.row();
+  writeFileSync(backupFailure.backupsDir, "file instead of directory");
+  await expect(backupFailure.repository.updateNoteInApp({ ...backupFailure.params(), content: "No" }, 0)).rejects.toThrow();
+  expect(backupFailure.row()).toEqual(before);
+  const preflightFailure = fixture({ connectNative: async () => nativeChannel(() => { calls++; }, () => { throw new Error("unsaved UI"); }) });
+  await expect(preflightFailure.repository.updateNoteInApp({ ...preflightFailure.params(), content: "No" }, 0)).rejects.toThrow("unsaved UI");
+  expect(existsSync(preflightFailure.backupsDir)).toBe(false);
+  expect(calls).toBe(0);
+});
+
+test("a lost native response is an unknown outcome with a retained backup and no retry", async () => {
+  let calls = 0;
+  const f = fixture({ connectNative: async () => nativeChannel(() => {
+    calls++; f.db.exec("UPDATE notes SET text='App saved before disconnect' WHERE id='note-a'"); throw new Error("lost response");
+  }) });
+  const result = await f.repository.updateNoteInApp({ ...f.params(), content: "Native body" }, 0);
+  expect(result.applied).toBeNull();
+  expect(result.state).toBe("unavailable");
+  expect(result.note).toBeNull();
+  expect(result.backupPath).not.toBeNull();
+  expect(calls).toBe(1);
+  expect(f.row().text).toBe("App saved before disconnect");
+});
+
+test("native dry run previews without backup or app mutation", async () => {
+  let calls = 0;
+  const f = fixture({ connectNative: async () => nativeChannel(() => { calls++; }) });
+  const result = await f.repository.updateNoteInApp({ ...f.params(), content: "Preview", dryRun: true }, 0);
+  expect(result.applied).toBe(false);
+  expect(result.preview?.content).toContain("Preview");
+  expect(result.backupPath).toBeNull();
+  expect(existsSync(f.backupsDir)).toBe(false);
+  expect(calls).toBe(0);
+});
+
+test("native schema checks accept added columns and a unique ID index in place of the primary key", async () => {
+  const f = fixture({ connectNative: async () => nativeChannel(() => { throw new Error("Dry run must not mutate"); }) });
+  f.db.exec("ALTER TABLE notes RENAME TO old_notes; CREATE TABLE notes AS SELECT * FROM old_notes; CREATE UNIQUE INDEX unique_note_id ON notes(id); ALTER TABLE notes ADD COLUMN new_app_field BLOB");
+  const result = await f.repository.updateNoteInApp({ ...f.params(), content: "Preview", dryRun: true }, 0);
+  expect(result.compatibility.database.compatible).toBe(true);
+  expect(result.compatibility.database.extraColumnsAllowed).toBe(true);
+  expect(result.backupPath).toBeNull();
+});
+
+test("native schema changes fail before backup or app action and are rechecked on every call", async () => {
+  for (const [change, reason] of [
+    ["ALTER TABLE notes DROP COLUMN syncedAt", "missing notes.syncedAt"],
+    ["ALTER TABLE notes RENAME COLUMN id TO legacy_id", "missing notes.id"],
+    ["ALTER TABLE notes RENAME TO old_notes; CREATE TABLE notes AS SELECT * FROM old_notes", "unique index"],
+    ["ALTER TABLE notes RENAME TO old_notes; CREATE TABLE notes AS SELECT * FROM old_notes; CREATE UNIQUE INDEX partial_id ON notes(id) WHERE deleted=0", "unique index"],
+    ["ALTER TABLE notes RENAME TO old_notes; CREATE TABLE notes AS SELECT * FROM old_notes; CREATE UNIQUE INDEX composite_id ON notes(id,title)", "unique index"],
+    ["ALTER TABLE notes DROP COLUMN summary; ALTER TABLE notes ADD COLUMN summary TEXT GENERATED ALWAYS AS (title) VIRTUAL", "non-generated"],
+  ]) {
+    let calls = 0;
+    const f = fixture({ connectNative: async () => nativeChannel(() => { calls++; }) });
+    await f.repository.updateNoteInApp({ ...f.params(), content: "Preview", dryRun: true }, 0);
+    const params = f.params();
+    f.db.exec(change!);
+    await expect(f.repository.updateNoteInApp({ ...params, content: "Must not write" }, 0)).rejects.toThrow(reason!);
+    expect(calls).toBe(0);
+    expect(existsSync(f.backupsDir)).toBe(false);
+  }
+});
+
+test("native malformed row data and schema changes during preflight cannot reach the app action", async () => {
+  let calls = 0;
+  const badValue = fixture({ connectNative: async () => nativeChannel(() => { calls++; }) });
+  badValue.db.exec("UPDATE notes SET revision='unexpected string' WHERE id='note-a'");
+  await expect(badValue.repository.updateNoteInApp({ ...badValue.params(), content: "No" }, 0)).rejects.toThrow("revision");
+  const midFlight = fixture({ connectNative: async () => nativeChannel(() => { calls++; }, () => { midFlight.db.exec("ALTER TABLE notes DROP COLUMN syncedAt"); }) });
+  await expect(midFlight.repository.updateNoteInApp({ ...midFlight.params(), content: "No" }, 0)).rejects.toThrow("missing notes.syncedAt");
+  expect(calls).toBe(0);
+  expect(existsSync(badValue.backupsDir)).toBe(false);
+  expect(existsSync(midFlight.backupsDir)).toBe(false);
 });

@@ -25,6 +25,8 @@ test("MCP get_note version, update preview, commit, backup and stale-write error
     const tool = (await client.listTools()).tools.find((item) => item.name === "update_note");
     expect(tool?.annotations?.readOnlyHint).toBe(false);
     const toolNames = (await client.listTools()).tools.map(item => item.name);
+    expect(toolNames).toContain("update_note_in_app");
+    expect(toolNames).toContain("get_upnote_bridge_status");
     const read = await client.callTool({ name: "get_note", arguments: { id: "test-note" } });
     const note = (read.structuredContent as { note: { version: string } }).note;
     expect(note.version).toMatch(/^[a-f\d]{64}$/);
