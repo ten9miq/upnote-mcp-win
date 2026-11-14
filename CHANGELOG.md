@@ -31,6 +31,7 @@ This fork starts an independent version line at **0.1.0** as `@ten9miq/upnote-mc
 
 ### Changed
 
+- Split native VM-runtime and HTTP/WebSocket fixtures into separate test files/processes to prevent the observed Bun 1.4.0 Windows CI crash; preserve all 87 tests without skipping or retrying failures
 - Back up only the complete target note row to a checked/flushed `note.sqlite3` recovery archive before every direct, native or partial edit, excluding unrelated notes/tables. Preserve version guards, no-write-on-backup-failure, and existing full-library backups.
 - Distinguish fork package/CLI/MCP identity, repository/support links and Windows bundle metadata from upstream; retain MIT attribution
 - Reorganize English/Japanese READMEs around CDP behavior, linked implementation comparisons, source setup, automatic launch, security and operational limits

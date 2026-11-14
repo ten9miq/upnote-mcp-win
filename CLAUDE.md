@@ -142,7 +142,7 @@ bun run check        # Run tsc --noEmit; this is the main verification gate
 bun run smoke        # Execute repository methods via scripts/smoke.ts
 ```
 
-- Run `bun run check` and `bun run test`. The full suite uses separate OS processes per file to avoid observed Bun 1.4.0/Windows shared-VM/native crashes. Do not skip/retry failed tests. Individual files may use `bun test ./src/name.test.ts`. Editing tests use temporary databases and must never mutate the user's real library. MCP integration testing needs process-list and loopback access.
+- Run `bun run check` and `bun run test`. The full suite uses separate OS processes per file to avoid observed Bun 1.4.0/Windows shared-VM/native crashes. Keep node:vm runtime fixtures and HTTP/WebSocket transport fixtures in separate test files; combining them also crashes within a single file on Windows CI. Do not skip/retry failed tests. Individual files may use `bun test ./src/name.test.ts`. Editing tests use temporary databases and must never mutate the user's real library. MCP integration testing needs process-list and loopback access.
 - `bun run smoke` requires the user's real database and performs read-only inspection. Keep live-library editing tests separate and explicitly authorized.
 
 ## Architecture

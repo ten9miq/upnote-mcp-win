@@ -22,11 +22,11 @@ An unsigned-in disposable-profile native test verified local save/DOM/backup and
 
 ## Automated tests
 
-The current suite passes all 87 tests in ten files and TypeScript checks, including per-note archives. The suite covers direct/native editing, archive integrity/exact row equality/rollback, exclusion of unrelated notes/tables, stale versions, metadata races, runtime/schema/value compatibility, async app actions, startup recovery, CF_HTML byte offsets, partial-operation ambiguity/overlap/protected objects and exact saved HTML. See [per-note backup verification](note-backups.md#verification) for the measured size reduction.
+The current suite passes all 87 tests in eleven files and TypeScript checks, including per-note archives. The suite covers direct/native editing, archive integrity/exact row equality/rollback, exclusion of unrelated notes/tables, stale versions, metadata races, runtime/schema/value compatibility, async app actions, startup recovery, CF_HTML byte offsets, partial-operation ambiguity/overlap/protected objects and exact saved HTML. See [per-note backup verification](note-backups.md#verification) for the measured size reduction.
 
 Long-note tests include multi-megabyte HTML and 8000 replacements. An isolated stdio MCP test reads a 6 MiB synthetic note compactly, rejects its oversized save, and checks a compact preview of an approximately 800 kB note against a fake app endpoint. This does not demonstrate real cloud syncing above UpNote's size limit.
 
-Run `bun run check` and `bun run test`. Per-file OS isolation avoids observed Bun 1.4.0/Windows shared-process crashes; native VM/transport fixtures may require additional process separation if the runtime crashes. A runtime crash is a failed run, not an application assertion pass. Do not hide failures with automatic retries.
+Run `bun run check` and `bun run test`. Per-file OS isolation avoids observed Bun 1.4.0/Windows shared-process crashes; VM runtime and HTTP/WebSocket fixtures are separate files/processes after a single-file combination crashed on Windows CI. A runtime crash is a failed run, not an application assertion pass. Do not hide failures with automatic retries.
 
 ## Reproducing live checks
 

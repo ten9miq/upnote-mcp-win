@@ -1,8 +1,9 @@
 import { resolve } from "node:path";
 
 // Bun 1.4.0/Windows can corrupt shared VM/native test state when the bridge's
-// node:vm fixtures and large HTML fixtures run in one process. Keep each file
-// in a fresh OS process; no test is skipped or retried.
+// node:vm, HTTP/WebSocket and large HTML fixtures run in one process. Keep VM
+// and transport fixtures in separate files, each in a fresh OS process;
+// no test is skipped or retried.
 const root = resolve(import.meta.dir, "..");
 const files = [...new Bun.Glob("src/**/*.test.ts").scanSync({ cwd: root })].sort();
 if (!files.length) throw new Error("No test files found.");

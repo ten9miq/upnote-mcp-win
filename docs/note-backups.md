@@ -21,6 +21,6 @@ Before saving, the server obtains a source writer reservation and rechecks the f
 
 ## Verification
 
-The complete suite passed **87 tests in 10 files**, plus TypeScript checks. Tests cover WAL and rollback-journal sources, exact pre-edit rows, exclusion of unrelated notes/tables, bounded archive size despite large unrelated data, binary/additive/quoted columns, independent revisions, stale writes, backup failures, rollback, and native/partial-edit flows.
+The complete suite passed **87 tests in 11 files**, plus TypeScript checks. Tests cover WAL and rollback-journal sources, exact pre-edit rows, exclusion of unrelated notes/tables, bounded archive size despite large unrelated data, binary/additive/quoted columns, independent revisions, stale writes, backup failures, rollback, and native/partial-edit flows.
 
 A read-only export of the dedicated long test note produced a **921600-byte** archive, compared with the **467320832-byte** library database: **99.80% smaller** for that note. The archive contained one exact pre-edit row and passed `integrity_check`. This check did not edit an UpNote note or test cloud synchronization; archive size varies with the target note's contents.
